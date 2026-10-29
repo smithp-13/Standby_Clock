@@ -218,3 +218,25 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Android / Gradle / Android Studio
+.gradle/
+.kotlin/
+.idea/
+*.iml
+local.properties
+captures/
+.cxx/
+.externalNativeBuild/
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# Local-only reference artwork (not referenced by the app)
+standby-clock copy/game.png
+standby-clock copy/game(1).png

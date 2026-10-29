@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Two overlapping coral/pink numerals-style blobs and the two-dot colon, echoing the clock face. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#F0FF5848"
+        android:pathData="M30,40 a10,10 0 0 1 20,0 v28 a10,10 0 0 1 -20,0 z" />
+    <path
+        android:fillColor="#E1FF968C"
+        android:pathData="M58,40 a10,10 0 0 1 20,0 v28 a10,10 0 0 1 -20,0 z" />
+    <path
+        android:fillColor="#DCE1E1E1"
+        android:pathData="M54,45 m-3.5,0 a3.5,3.5 0 1 0 7,0 a3.5,3.5 0 1 0 -7,0 M54,63 m-3.5,0 a3.5,3.5 0 1 0 7,0 a3.5,3.5 0 1 0 -7,0" />
+</vector>
