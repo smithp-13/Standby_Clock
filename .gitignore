@@ -238,5 +238,5 @@ captures/
 __MACOSX/
 
 # Local-only reference artwork (not referenced by the app)
-standby-clock copy/game.png
-standby-clock copy/game(1).png
+standby-clock/game.png
+standby-clock/game(1).png
