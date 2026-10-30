@@ -12,6 +12,7 @@ import android.graphics.Rect
 import android.text.format.DateFormat
 import android.view.View
 import android.view.animation.DecelerateInterpolator
+import android.os.Build
 import java.util.Calendar
 
 /** iOS StandBy "big numerals" style: heavy rounded digits that overlap, with a two-dot colon. */
@@ -23,13 +24,19 @@ class StandbyClockView(context: Context) : View(context) {
         textAlign = Paint.Align.CENTER
     }
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(220, 225, 225, 225) }
-    private val digitColors = intArrayOf(Color.argb(240, 255, 88, 72), Color.argb(225, 255, 150, 140))
+    // Material You: the two overlapping digit tones come from the wallpaper-based accent palette (Android 12+).
+    private val digitColors = if (Build.VERSION.SDK_INT >= 31) intArrayOf(
+        withAlpha(context.getColor(android.R.color.system_accent1_400), 240),
+        withAlpha(context.getColor(android.R.color.system_accent1_200), 225),
+    ) else intArrayOf(Color.argb(240, 255, 88, 72), Color.argb(225, 255, 150, 140))
     private val bounds = Rect()
     private val centers = FloatArray(4)
 
     /** Text size as a fraction of the view height, before shrinking to fit the width. */
     var heightFactor = 0.9f
         set(value) { field = value; invalidate() }
+
+    private fun withAlpha(color: Int, alpha: Int) = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
 
     // Digits on screen ("1535") and the ones they are rolling away from when the minute changes.
     private var shown = ""

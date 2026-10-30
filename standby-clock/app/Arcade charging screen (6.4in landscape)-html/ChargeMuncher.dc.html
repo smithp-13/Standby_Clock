@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Arcade charging screen</title>
+<script src="./vendor/react.js"></script>
+<script src="./vendor/react-dom.js"></script>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#7AA2FF}a:hover{color:#A9C2FF}
+.jaw{transform-box:fill-box;transform-origin:center;animation:chomp .26s ease-in-out infinite alternate}
+.bob{animation:bob .52s ease-in-out infinite}
+.blink{transform-box:fill-box;transform-origin:center;animation:blink 3.4s ease-in-out infinite}
+.next{animation:nextPulse .9s ease-in-out infinite}
+.bolt{animation:boltGlow 1.4s ease-in-out infinite}
+@keyframes chomp{from{transform:scaleY(.1)}to{transform:scaleY(1)}}
+.frameA{animation:frameA .52s steps(1,end) infinite}
+.frameB{animation:frameB .52s steps(1,end) infinite}
+@keyframes frameA{0%{opacity:1}50%{opacity:0}}
+@keyframes frameB{0%{opacity:0}50%{opacity:1}}
+@keyframes bob{0%,100%{transform:translateX(0)}50%{transform:translateX(2px)}}
+@keyframes blink{0%,92%,100%{transform:scaleY(1)}96%{transform:scaleY(.1)}}
+@keyframes nextPulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes boltGlow{0%,100%{opacity:1}50%{opacity:.55}}
+@media (prefers-reduced-motion: reduce){.screen *{animation:none !important}}
+</style>
+</helmet>
+<div style="width: 1040px; height: 620px; box-sizing: border-box; padding: 40px; display: flex; flex-direction: column; align-items: center; gap: 24px; background: #E9EBEF; font-family: 'JetBrains Mono', monospace">
+
+<div style="width: 960px; height: 480px; box-sizing: border-box; padding: 34px; border-radius: 56px; background: #16181C; box-shadow: inset 0 0 0 2px #2A2D33">
+<div class="screen" style="position: relative; width: 892px; height: 412px; border-radius: 28px; overflow: hidden; background: #000000">
+
+<svg width="892" height="412" viewBox="0 0 892 412" style="position: absolute; left: 0; top: 0" aria-hidden="true">
+<rect x="58" y="58" width="776" height="296" rx="18" fill="none" stroke="#2B3BFF" stroke-width="5"></rect>
+</svg>
+
+<sc-for list="{{dots}}" as="d" hint-placeholder-count="96">
+<div class="{{d.cls}}" style="position: absolute; left: {{d.left}}px; top: {{d.top}}px; width: {{d.size}}px; height: {{d.size}}px; border-radius: 50%; background: #FFD9C7; opacity: {{d.op}}"></div>
+</sc-for>
+
+<sc-for list="{{marks}}" as="m" hint-placeholder-count="4">
+<div style="position: absolute; left: {{m.left}}px; top: {{m.top}}px; width: 30px; height: 30px; opacity: {{m.op}}">
+<svg width="30" height="30" viewBox="0 0 44 44" aria-hidden="true">
+<path d="M22 3 39 12.5v19L22 41 5 31.5v-19z" fill="#22D3EE" fill-opacity="{{m.fill}}" stroke="#22D3EE" stroke-width="3"></path>
+</svg>
+</div>
+</sc-for>
+
+<div style="position: absolute; left: {{hero.left}}px; top: {{hero.top}}px; width: 40px; height: 40px; transform: rotate({{hero.rot}}deg) scaleX({{hero.flip}})">
+<div class="bob" style="position: relative; width: 40px; height: 40px">
+<sc-if value="{{hasSprite}}" hint-placeholder-val="{{ false }}">
+<img class="frameA" src="{{spriteOpen}}" alt="Charging character at {{level}} percent" style="position: absolute; left: 0; top: 0; width: 40px; height: 40px; object-fit: contain">
+<img class="frameB" src="{{spriteClosed}}" alt="" style="position: absolute; left: 0; top: 0; width: 40px; height: 40px; object-fit: contain">
+</sc-if>
+<sc-if value="{{noSprite}}" hint-placeholder-val="{{ true }}">
+<svg width="40" height="40" viewBox="0 0 64 56" role="img" aria-label="Charging character at {{level}} percent">
+<rect x="0" y="20" width="10" height="16" rx="3" fill="{{shade}}"></rect>
+<rect x="6" y="4" width="54" height="48" rx="16" fill="{{accent}}"></rect>
+<rect x="12" y="10" width="20" height="6" rx="3" fill="#FFFFFF" fill-opacity=".3"></rect>
+<g class="blink">
+<circle cx="42" cy="17" r="6.5" fill="#FFFFFF"></circle>
+<circle cx="44.5" cy="17" r="3.2" fill="#000000"></circle>
+</g>
+<rect class="jaw" x="36" y="27" width="26" height="16" rx="5" fill="#000000"></rect>
+</svg>
+</sc-if>
+</div>
+</div>
+
+<div style="position: absolute; left: 58px; top: 58px; width: 776px; height: 296px; box-sizing: border-box; padding: 26px 30px; display: flex; flex-direction: column; align-items: flex-end; justify-content: flex-start; gap: 16px; text-align: right">
+<div style="display: flex; align-items: center; gap: 12px">
+<svg class="bolt" width="16" height="22" viewBox="0 0 12 16" aria-hidden="true"><path d="M7.5 0 0 9h5l-1.5 7L12 6H7z" fill="{{accent}}"></path></svg>
+<span style="font-family: 'Press Start 2P', monospace; font-size: 14px; letter-spacing: .12em; color: {{accent}}">CHARGING</span>
+</div>
+<p style="margin: 0; font-family: 'Press Start 2P', monospace; font-size: 56px; line-height: 1; color: #FFFFFF">{{level}}%</p>
+<p style="margin: 0; font-family: 'Press Start 2P', monospace; font-size: 11px; letter-spacing: .08em; color: #8F98FF">{{eaten}} / 100 EATEN</p>
+</div>
+
+</div>
+</div>
+
+<p style="margin: 0; font-size: 12.5px; color: #4B5563">6.4″ class · 19.5:9 · 2340×1080 px · landscape frame 892×412 dp · 100 dots = 100% · bigger dot every 5% · cell every 25%</p>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"level":{"editor":"range","default":64,"min":0,"max":100,"step":1,"unit":"%"},"accent":{"editor":"color","default":"#FFD400","options":["#FFD400","#22C55E","#38BDF8","#F472B6"]},"spriteOpen":{"editor":"text","default":"","section":"Character image"},"spriteClosed":{"editor":"text","default":"","section":"Character image"},"$preview":{"width":1040,"height":620}}'>
+class Component extends DCLogic {
+renderVals() {
+const raw = Math.round(this.props.level ?? 64);
+const L = Math.max(0, Math.min(100, raw));
+const accent = this.props.accent ?? '#FFD400';
+const pos = (i) => {
+if (i < 36) return { x: 36 + 820 * i / 36, y: 36, rot: 0, flip: 1 };
+if (i < 50) return { x: 856, y: 36 + 340 * (i - 36) / 14, rot: 90, flip: 1 };
+if (i < 86) return { x: 856 - 820 * (i - 50) / 36, y: 376, rot: 0, flip: -1 };
+return { x: 36, y: 376 - 340 * (i - 86) / 14, rot: -90, flip: 1 };
+};
+const heroIdx = L >= 100 ? 0 : L;
+const dots = [], marks = [];
+for (let i = 0; i < 100; i++) {
+const p = pos(i);
+const eaten = i < L;
+const under = i === heroIdx;
+if ((i + 1) % 25 === 0) {
+marks.push({ left: +(p.x - 15).toFixed(1), top: +(p.y - 15).toFixed(1), op: under ? 0 : 1, fill: eaten ? 0.9 : 0.15 });
+continue;
+}
+const big = (i + 1) % 5 === 0;
+const size = big ? 12 : 6;
+dots.push({
+left: +(p.x - size / 2).toFixed(1), top: +(p.y - size / 2).toFixed(1), size: size,
+op: under ? 0 : (eaten ? 0.1 : 1),
+cls: (i === heroIdx + 1 && !eaten) ? 'next' : ''
+});
+}
+const h = pos(heroIdx);
+const sOpen = (this.props.spriteOpen ?? '').trim();
+const sClosed = (this.props.spriteClosed ?? '').trim() || sOpen;
+const hasSprite = sOpen.length > 0;
+return {
+hasSprite: hasSprite, noSprite: !hasSprite, spriteOpen: sOpen, spriteClosed: sClosed,
+level: L, eaten: L, accent: accent, shade: '#B38F00',
+dots: dots, marks: marks,
+hero: { left: +(h.x - 20).toFixed(1), top: +(h.y - 20).toFixed(1), rot: h.rot, flip: h.flip }
+};
+}
+}
+</script>
+</body>
+</html>
