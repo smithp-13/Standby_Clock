@@ -1,6 +1,7 @@
 package com.standby.clock
 
 import android.app.KeyguardManager
+import android.app.admin.DevicePolicyManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -27,7 +28,10 @@ class SensorService : NotificationListenerService(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
     private var landscape = false
     private val handler = Handler(Looper.getMainLooper())
-    private val returnClock = Runnable { if (standbyReady()) showClock() }
+    // After a double tap the clock comes back once on its own, even if the lock screen timed out meanwhile.
+    private val returnClock = Runnable { if (standbyReady(sensorTurned = true)) showClock() }
+    // Locked, sideways and left alone on the lock screen for 5 s: show the clock (never wakes a dark screen).
+    private val idleShow = Runnable { if (standbyReady()) showClock() }
     private var lockChecks = 0
     // After the screen goes off the device only locks once its lock delay passes; check once a second.
     private val awaitLock = object : Runnable {
@@ -42,8 +46,19 @@ class SensorService : NotificationListenerService(), SensorEventListener {
         override fun onReceive(context: Context, intent: Intent) {
             log("${intent.action?.substringAfterLast('.')} ${state()}")
             when (intent.action) {
-                Intent.ACTION_SCREEN_ON, Intent.ACTION_POWER_CONNECTED -> if (standbyReady()) showClock()
-                Intent.ACTION_SCREEN_OFF -> if (landscape && pluggedIn()) {
+                Intent.ACTION_SCREEN_ON -> scheduleIdleShow()
+                Intent.ACTION_POWER_CONNECTED -> if (standbyReady()) showClock()
+                // A charging phone that times out may start the screen saver instead of turning the screen off
+                // (the M34 does), so the screen saver starting counts as the timeout too.
+                Intent.ACTION_SCREEN_OFF, Intent.ACTION_DREAMING_STARTED -> if (!landscape || !pluggedIn()) {
+                    handler.removeCallbacks(idleShow)
+                } else {
+                    // Charging and sideways and idle until the timeout: lock now instead of waiting out the
+                    // device's auto-lock delay, so standby starts straight away.
+                    if (!getSystemService(KeyguardManager::class.java).isKeyguardLocked && LockAdmin.isActive(context)) {
+                        getSystemService(DevicePolicyManager::class.java).lockNow()
+                        log("locked for standby")
+                    }
                     lockChecks = 0
                     handler.removeCallbacks(awaitLock)
                     returnWakeLock.acquire(LOCK_WAIT_MS + 1_000)
@@ -51,6 +66,7 @@ class SensorService : NotificationListenerService(), SensorEventListener {
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     handler.removeCallbacks(returnClock)
+                    handler.removeCallbacks(idleShow)
                     handler.removeCallbacks(awaitLock)
                 }
             }
@@ -64,7 +80,10 @@ class SensorService : NotificationListenerService(), SensorEventListener {
 
     override fun onListenerConnected() {
         release() // a rebind can connect again without a disconnect; never register twice
+        if (!ClockActivity.showing) setStandbyQuiet(false) // undo DND left on by a process that died mid-standby
         instance = this
+        BindWatchdog.schedule(this)
+        getSystemService(NotificationManager::class.java).cancel(BindWatchdog.RESTART_NOTIFICATION_ID)
         sendBroadcast(Intent(ACTION_STATE_CHANGED).setPackage(packageName))
         registerSensors()
         registerReceiver(screenReceiver, IntentFilter().apply {
@@ -72,10 +91,12 @@ class SensorService : NotificationListenerService(), SensorEventListener {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_USER_PRESENT)
             addAction(Intent.ACTION_POWER_CONNECTED)
+            addAction(Intent.ACTION_DREAMING_STARTED)
         })
     }
 
     override fun onListenerDisconnected() {
+        runCatching { setStandbyQuiet(false) }
         release()
         sendBroadcast(Intent(ACTION_STATE_CHANGED).setPackage(packageName))
         log("service stopped")
@@ -86,9 +107,36 @@ class SensorService : NotificationListenerService(), SensorEventListener {
         super.onDestroy()
     }
 
+    // Persisted, so if the process dies while the clock is up (update, low memory) the next connection restores DND.
+    private var filterBeforeStandby: Int?
+        get() = getSharedPreferences("standby", MODE_PRIVATE).getInt(KEY_FILTER_BEFORE, -1).takeIf { it >= 0 }
+        set(value) = getSharedPreferences("standby", MODE_PRIVATE).edit().apply {
+            if (value == null) remove(KEY_FILTER_BEFORE) else putInt(KEY_FILTER_BEFORE, value)
+        }.apply()
+
+    /**
+     * While the lock-screen clock is up, ask for Do Not Disturb (priority only: the user's DND exceptions such
+     * as alarms still apply) so other apps' banners don't cover it; new notifications still show as icons.
+     * The previous filter is restored, and only if standby was the one that changed it.
+     */
+    fun setStandbyQuiet(quiet: Boolean) {
+        if (quiet && filterBeforeStandby == null) {
+            val before = currentInterruptionFilter
+            if (before == INTERRUPTION_FILTER_ALL) {
+                filterBeforeStandby = before
+                requestInterruptionFilter(INTERRUPTION_FILTER_PRIORITY)
+                log("standby quiet on")
+            }
+        } else if (!quiet) {
+            filterBeforeStandby?.let { requestInterruptionFilter(it); log("standby quiet off") }
+            filterBeforeStandby = null
+        }
+    }
+
     private fun release() {
         instance = null
         handler.removeCallbacks(returnClock)
+        handler.removeCallbacks(idleShow)
         handler.removeCallbacks(awaitLock)
         sensorManager.unregisterListener(this)
         runCatching { unregisterReceiver(screenReceiver) }
@@ -138,10 +186,28 @@ class SensorService : NotificationListenerService(), SensorEventListener {
             landscape = event.values[0].toInt() == 1 || event.values[0].toInt() == 3
             if (!landscape) {
                 handler.removeCallbacks(returnClock)
+                handler.removeCallbacks(idleShow)
                 handler.removeCallbacks(awaitLock)
                 hideClock()
-            } else if (standbyReady(sensorTurned = true)) showClock()
+            } else {
+                // Turned sideways: after 5 s left alone the clock comes up (on battery it may wake the screen once).
+                handler.removeCallbacks(returnClock)
+                handler.postDelayed(returnClock, IDLE_RETURN_MS)
+                returnWakeLock.acquire(IDLE_RETURN_MS + 1_000)
+            }
         }
+    }
+
+    private fun scheduleIdleShow() {
+        handler.removeCallbacks(idleShow)
+        if (landscape && !ClockActivity.showing) handler.postDelayed(idleShow, IDLE_RETURN_MS)
+    }
+
+    /** The user's own Do Not Disturb is on (not the one standby turns on while the clock shows). */
+    fun userDnd() = currentInterruptionFilter != INTERRUPTION_FILTER_ALL && filterBeforeStandby == null
+
+    override fun onInterruptionFilterChanged(interruptionFilter: Int) {
+        sendBroadcast(Intent(ACTION_NOTIFICATIONS_CHANGED).setPackage(packageName)) // the clock re-checks userDnd
     }
 
     /**
@@ -173,6 +239,9 @@ class SensorService : NotificationListenerService(), SensorEventListener {
     private fun showClock() {
         if (ClockActivity.showing) return
         val nm = getSystemService(NotificationManager::class.java)
+        // A full-screen intent only launches for a new post, not an update of one still showing (e.g. left over
+        // from a process that died before the clock cancelled it), so always post it fresh.
+        nm.cancel(CLOCK_NOTIFICATION_ID)
         nm.createNotificationChannel(
             NotificationChannel(CLOCK_CHANNEL_ID, "Standby clock", NotificationManager.IMPORTANCE_HIGH)
         )
@@ -185,6 +254,9 @@ class SensorService : NotificationListenerService(), SensorEventListener {
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle("Standby clock")
             .setContentIntent(open)
+            // The user's own Do Not Disturb blocks ordinary notifications, full-screen intent included; alarms
+            // pass by default, so the clock (an alarm-clock style screen) still opens.
+            .setCategory(Notification.CATEGORY_ALARM)
             .setFullScreenIntent(open, true)
             .build())
         log("clock requested fullScreenAllowed=${android.os.Build.VERSION.SDK_INT < 34 || nm.canUseFullScreenIntent()}")
@@ -210,7 +282,8 @@ class SensorService : NotificationListenerService(), SensorEventListener {
         const val ACTION_HIDE_CLOCK = "com.standby.clock.HIDE_CLOCK"
         const val ACTION_NOTIFICATIONS_CHANGED = "com.standby.clock.NOTIFICATIONS_CHANGED"
         const val CLOCK_NOTIFICATION_ID = 2
-        private const val IDLE_RETURN_MS = 10_000L
+        private const val IDLE_RETURN_MS = 5_000L
+        private const val KEY_FILTER_BEFORE = "filter_before_standby"
         const val ACTION_STATE_CHANGED = "com.standby.clock.STATE_CHANGED"
         private const val LOCK_WAIT_MS = 30_000L // longest common lock delay after screen-off
         private const val LOCK_POLL_MS = 250L

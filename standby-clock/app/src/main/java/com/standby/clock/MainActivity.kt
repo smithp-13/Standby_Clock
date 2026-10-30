@@ -3,6 +3,7 @@ package com.standby.clock
 import android.Manifest
 import android.app.Activity
 import android.app.NotificationManager
+import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -14,7 +15,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.service.notification.NotificationListenerService
 import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
@@ -40,6 +40,7 @@ class MainActivity : Activity() {
 
         startButton = button("Start") { start() }
         stopButton = button("Stop") {
+            BindWatchdog.setStoppedByUser(this, true)
             SensorService.instance?.requestUnbind()
             show(running = false)
         }
@@ -50,6 +51,13 @@ class MainActivity : Activity() {
             for (b in listOf(
                 startButton,
                 stopButton,
+                button("Theme: ${Theme.current(this@MainActivity).label}") {}.apply {
+                    setOnClickListener {
+                        val next = Theme.entries[(Theme.current(this@MainActivity).ordinal + 1) % Theme.entries.size]
+                        Theme.set(this@MainActivity, next)
+                        text = "Theme: ${next.label}"
+                    }
+                },
                 button("Preview") {
                     startActivity(Intent(this@MainActivity, ClockActivity::class.java)
                         .putExtra(ClockActivity.EXTRA_PREVIEW, true))
@@ -58,6 +66,7 @@ class MainActivity : Activity() {
                 button("Clear log") { EventLog.clear(this@MainActivity) },
             )) addView(b, LinearLayout.LayoutParams(dp(220), -2).apply { topMargin = dp(12) })
         })
+        BindWatchdog.schedule(this)
     }
 
     override fun onResume() {
@@ -83,15 +92,29 @@ class MainActivity : Activity() {
             Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED ->
                 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
-            // The listener runs once notification access is granted; Start re-binds it after a Stop.
+            !LockAdmin.isActive(this) ->
+                startActivity(Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+                    .putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, LockAdmin.component(this))
+                    .putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                        "Lets Standby Clock lock the screen when a charging phone times out, so the clock appears immediately."))
+            // The listener runs once notification access is granted; Start re-binds it after a Stop or a drop.
             else -> {
-                NotificationListenerService.requestRebind(listener)
+                BindWatchdog.setStoppedByUser(this, false)
+                BindWatchdog.ensureBound(this, "start")
                 show(running = true)
+                // If One UI won't re-bind it, take the user straight to the off/on switch that does.
+                startButton.postDelayed({
+                    if (SensorService.instance == null) {
+                        android.widget.Toast.makeText(this, "Switch Standby Clock off and on to restart it", android.widget.Toast.LENGTH_LONG).show()
+                        startActivity(BindWatchdog.restartIntent(listener))
+                    }
+                }, 3_500)
             }
         }
     }
 
-    private fun refresh() = show(SensorService.instance != null)
+    // Start stays tappable until setup is complete too, so an update that adds a step (device admin) can finish it.
+    private fun refresh() = show(SensorService.instance != null && LockAdmin.isActive(this))
 
     /** Only one of Start/Stop is usable at a time, so the buttons show whether standby is running. */
     private fun show(running: Boolean) {
