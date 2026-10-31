@@ -4,338 +4,532 @@ import android.graphics.Color
 
 /**
  * Pixel-art sprites for the Mario clock, one character per pixel ('.' is transparent), coloured by [PALETTE].
- * Mario's palette, head, standing body and jump pose are sampled from the user's mario_*.png; everything else is
- * drawn in the NES / Mario Maker style of the user's reference sheet.
+ * Every character, enemy, block and item is the NES sprite from the Mario Wiki, taken pixel for pixel from the PNGs in
+ * SMB_iCON/ (the wiki only has standing poses, so Mario's walk and jump poses change only his legs and fist). Only the
+ * fireball and the smiling cloud are drawn by hand.
  */
 internal object MarioSprites {
 
     val PALETTE = mapOf(
-        'R' to Color.rgb(0xF3, 0x39, 0x33), // cap and shirt, mushroom cap, flower centre
-        'H' to Color.rgb(0x69, 0x4F, 0x42), // hair and shoes
-        'S' to Color.rgb(0xF1, 0xC6, 0x90), // skin
-        'K' to Color.rgb(0x24, 0x22, 0x20), // eyes, moustache, outlines
-        'B' to Color.rgb(0x66, 0x76, 0xD5), // overalls
-        'Y' to Color.rgb(0xE5, 0xA9, 0x3B), // buttons
-        'U' to Color.rgb(0xF8, 0xD8, 0x78), // Koopa skin
-        'L' to Color.rgb(0xB8, 0xF8, 0x18), // light green
-        'G' to Color.rgb(0x00, 0xA8, 0x00), // green
-        'D' to Color.rgb(0x00, 0x60, 0x00), // dark green
-        'N' to Color.rgb(0xA0, 0x4A, 0x10), // brown
-        'T' to Color.rgb(0xF0, 0xC0, 0x90), // tan
-        'Q' to Color.rgb(0xC8, 0x4C, 0x0C), // brick
-        'O' to Color.rgb(0xF8, 0xA0, 0x30), // star and flower orange
-        'C' to Color.rgb(0x3C, 0xBC, 0xFC), // ice
+        'r' to Color.rgb(0xB5, 0x31, 0x20), // Mario: cap and overalls; mushroom cap; flower
+        'h' to Color.rgb(0x6B, 0x6D, 0x00), // Mario: hair, shirt and shoes
+        's' to Color.rgb(0xEA, 0x9E, 0x22), // Mario: skin; the items' orange
+        'f' to Color.rgb(0xF7, 0xD8, 0xA5), // Fire Mario: cream
+        'a' to Color.rgb(0x99, 0x4E, 0x00), // brown: Goomba, bricks
+        'p' to Color.rgb(0xFF, 0xCC, 0xC5), // pink: Goomba feet, brick highlights
+        'k' to Color.BLACK,
+        'e' to Color.rgb(0x0D, 0x93, 0x00), // green
+        'l' to Color.rgb(0x88, 0xD8, 0x00), // light green: pipe
         'W' to Color.WHITE,
+        'K' to Color.rgb(0x24, 0x22, 0x20), // the smiling cloud's face
+        'R' to Color.rgb(0xF3, 0x39, 0x33), // fireball and fireworks
+        'O' to Color.rgb(0xF8, 0xA0, 0x30),
+        'L' to Color.rgb(0xB8, 0xF8, 0x18), // flagpole ball and fireworks
+        'G' to Color.rgb(0x00, 0xA8, 0x00), // flagpole, flag
+        'Q' to Color.rgb(0x99, 0x4E, 0x00), // castle bricks
     )
 
-    /** Fire Mario: white overalls. */
-    val FIRE_SWAP = mapOf('B' to Color.rgb(0xF8, 0xF8, 0xF8))
+    /** Fire Mario: the wiki's Fire Mario sprite is the Super sprite with these two colours changed. */
+    val FIRE_SWAP = mapOf('r' to Color.rgb(0xF7, 0xD8, 0xA5), 'h' to Color.rgb(0xB5, 0x31, 0x20))
 
     /** Star power: Mario cycles through these every 70 ms. */
     val STAR_SWAPS = listOf(
-        mapOf('R' to Color.rgb(0x00, 0xA8, 0x00), 'B' to Color.rgb(0xF8, 0xB8, 0x00)),
-        mapOf('R' to Color.WHITE, 'B' to Color.rgb(0xF3, 0x39, 0x33)),
-        mapOf('R' to Color.rgb(0x24, 0x22, 0x20), 'B' to Color.rgb(0xF8, 0xB8, 0x00)),
+        mapOf('r' to Color.rgb(0x00, 0xA8, 0x00), 'h' to Color.rgb(0xF8, 0xB8, 0x00)),
+        mapOf('r' to Color.WHITE, 'h' to Color.rgb(0xB5, 0x31, 0x20)),
+        mapOf('r' to Color.rgb(0x24, 0x22, 0x20), 'h' to Color.rgb(0xF8, 0xB8, 0x00)),
         emptyMap(),
     )
 
-    // ---- Small Mario (16×16) --------------------------------------------------------------------------------------
+    // ---- Mario: 16 wide, 16 tall small and 32 tall Super; all face right -------------------------------------------
 
-    // Same head on every frame (rows 0-6 of mario_stand.png) and both hands always drawn, so nothing pops
-    // between frames. Only arms and legs move.
-    private val HEAD = arrayOf(
-        ".....RRRRR......",
-        "....RRRRRRRRR...",
-        "....HHHSSKS.....",
-        "...HSHSSSKSSS...",
-        "...HSHHSSSKSSS..",
-        "...HHSSSSKKKK...",
-        ".....SSSSSSS....",
+    /** Small Mario standing: the wiki sprite (12 wide) centred in 16. */
+    val STAND = arrayOf(
+        ".....rrrrr......",
+        "....rrrrrrrrr...",
+        "....hhhsshs.....",
+        "...hshssshsss...",
+        "...hshhssshsss..",
+        "...hhsssshhhh...",
+        ".....sssssss....",
+        "....hhrhhh......",
+        "...hhhrhhrhhh...",
+        "..hhhhrrrrhhhh..",
+        "..sshrsrrsrhss..",
+        "..sssrrrrrrsss..",
+        "..ssrrrrrrrrss..",
+        "....rrr..rrr....",
+        "...hhh....hhh...",
+        "..hhhh....hhhh..",
     )
-    /** Stride: arms swung out front and back, legs apart. */
-    private val WALK_1 = HEAD + arrayOf(
-        "....RRBRRR......",
-        "...RRRBRRBRR....",
-        ".SSRRRBBBBRRRSS.",
-        ".SS.RBYBBYBR.SS.",
-        "....BBBBBBBB....",
-        "...BBBBBBBBBB...",
-        "..BBBB...BBBB...",
-        "..HHH.....HHH...",
-        ".HHHH.....HHHH..",
+    /** Back foot lifted, legs together: between standing and the stride. */
+    private val PASS_SMALL = arrayOf(
+        ".....rrrrr......",
+        "....rrrrrrrrr...",
+        "....hhhsshs.....",
+        "...hshssshsss...",
+        "...hshhssshsss..",
+        "...hhsssshhhh...",
+        ".....sssssss....",
+        "....hhrhhh......",
+        "...hhhrhhrhhh...",
+        "..hhhhrrrrhhhh..",
+        "..sshrsrrsrhss..",
+        "..sssrrrrrrsss..",
+        "..ssrrrrrrrrss..",
+        "...rrrrrr.......",
+        "...hhhhhhh......",
+        "...hhh.hhhh.....",
     )
-    /** Mid step: hands at the hips, legs closing. */
-    private val WALK_2 = HEAD + arrayOf(
-        "....RRBRRR......",
-        "...RRRBRRBRR....",
-        "...RRRBBBBRRR...",
-        "...SSBYBBYBSS...",
-        "...SSBBBBBBSS...",
-        "....BBBBBBBB....",
-        "...BBBB..BBB....",
-        "...HHH...HHH....",
-        "..HHHH...HHHH...",
+    /** Mid-stride, feet apart. */
+    private val STRIDE_SMALL = arrayOf(
+        ".....rrrrr......",
+        "....rrrrrrrrr...",
+        "....hhhsshs.....",
+        "...hshssshsss...",
+        "...hshhssshsss..",
+        "...hhsssshhhh...",
+        ".....sssssss....",
+        "....hhrhhh......",
+        "...hhhrhhrhhh...",
+        "..hhhhrrrrhhhh..",
+        "..sshrsrrsrhss..",
+        "..sssrrrrrrsss..",
+        "..ssrrrrrrrrss..",
+        "..rrrr....rrrr..",
+        "..hhhh....hhhh..",
+        ".hhh........hhh.",
     )
-    /** Passing: legs together under the body. */
-    private val WALK_3 = HEAD + arrayOf(
-        "....RRBRRR......",
-        "...RRRBRRBRR....",
-        "...RRRBBBBRRR...",
-        "...SSBYBBYBSS...",
-        "...SSBBBBBBSS...",
-        ".....BBBBBB.....",
-        ".....BBBBBB.....",
-        ".....HHHHHH.....",
-        "....HHHHHHHH....",
-    )
-    /** NES order 1-2-3-2, so the legs swing back and forth instead of snapping from wide to closed. */
-    val WALK_CYCLE = arrayOf(WALK_1, WALK_2, WALK_3, WALK_2)
-    val STAND = WALK_2
-
-    /** Fist raised on top, from mario_jump.png. */
+    /** Standing, lifting a foot, stride, lifting a foot: the legs swing instead of snapping from wide to closed. */
+    val WALK_CYCLE = arrayOf(STAND, PASS_SMALL, STRIDE_SMALL, PASS_SMALL)
+    /** Small Mario in the air, legs apart. */
     val JUMP = arrayOf(
-        "............SSS.",
-        ".....RRRRR..SSS.",
-        "....RRRRRRRRRSS.",
-        "....HHHSSKS.RRR.",
-        "...HSHSSSKSSRRR.",
-        "...HSHHSSSKSSRR.",
-        "...HHSSSSKKKK.R.",
-        ".....SSSSSSS....",
-        "....RRBRRR......",
-        "...RRRBRRBRRR...",
-        "..RRRRBBBB.RRR..",
-        "..SSRBYBBYBR....",
-        "..SSSB.BBB......",
-        "..SS.BBBBBB.....",
-        ".....HHH.HHH....",
-        "....HHHH..HHHH..",
+        ".....rrrrr......",
+        "....rrrrrrrrr...",
+        "....hhhsshs.....",
+        "...hshssshsss...",
+        "...hshhssshsss..",
+        "...hhsssshhhh...",
+        ".....sssssss....",
+        "....hhrhhh......",
+        "...hhhrhhrhhh...",
+        "..hhhhrrrrhhhh..",
+        "..sshrsrrsrhss..",
+        "..sssrrrrrrsss..",
+        "..ssrrrrrrrrss..",
+        "..rrr......rrr..",
+        ".hhhh......hhhh.",
+        "hhh..........hhh",
     )
 
-    // ---- Super Mario (16×32): the same head on a taller body -------------------------------------------------------
-
-    private val BIG_HEAD = HEAD + arrayOf("......SSSSS.....")
-    private val BIG_TORSO = arrayOf(
-        "....RRRBRRR.....",
-        "...RRRRBRRRR....",
-        "..RRRRRBBRRRR...",
-        ".RRRRRRBBBRRRR..",
-        ".RRRRRBBBBBRRRR.",
-        "SSRRRBBYBBYBRRSS",
-        "SSSRBBBBBBBBRSSS",
-        "SSS.BBBBBBBBBSSS",
-        "SS..BBBBBBBBB.SS",
-        "....BBBBBBBBBB..",
-        "...BBBBBBBBBBB..",
-        "...BBBBBBBBBBB..",
-        "...BBBBB.BBBBB..",
+    /** Super Mario standing: the wiki sprite. Fire Mario is the same with [FIRE_SWAP]. */
+    val BIG_STAND = arrayOf(
+        "......rrrrr.....",
+        "....rrrrrrs.....",
+        "...rrrrrrss.....",
+        "...rrrrrrrrrrr..",
+        "...hhhsshsss....",
+        "..hsshsshhssss..",
+        "..hsshhssssssss.",
+        ".hhsshhssshssss.",
+        ".hhssssshhhhhh..",
+        ".hhhssssshhhhh..",
+        "...hhssssssss...",
+        "....rsssssh.....",
+        "....hrhhhhrh....",
+        "...hhrhhhhrhh...",
+        "..hhhrhhhhrhhh..",
+        ".hhhhrhhhhrhhhh.",
+        ".hhhrrhhhhrrhhh.",
+        "hhhhrrhhhhrrhhhh",
+        "hhhhrrrrrrrrhhhh",
+        "hhhhrsrrrrsrhhhh",
+        "ssssrrrrrrrrssss",
+        "ssssrrrrrrrrssss",
+        ".sssrrrrrrrrsss.",
+        ".ssrrrrrrrrrrss.",
+        "..rrrrrrrrrrrr..",
+        ".rrrrrr..rrrrrr.",
+        ".rrrrr....rrrrr.",
+        ".rrrrr....rrrrr.",
+        "..hhhh....hhhh..",
+        "..hhhh....hhhh..",
+        "hhhhhh....hhhhhh",
+        "hhhhhh....hhhhhh",
     )
-    /** The torso with the right hand gone up into the raised fist. */
-    private val BIG_TORSO_JUMP = BIG_TORSO.copyOfRange(0, 5) + arrayOf(
-        "SSRRRBBYBBYBRR..",
-        "SSSRBBBBBBBBR...",
-        "SSS.BBBBBBBBB...",
-        "SS..BBBBBBBBB...",
-    ) + BIG_TORSO.copyOfRange(9, 13)
-    private val BIG_LEGS_STAND = Array(8) { "..BBBBB..BBBBB.." } + arrayOf(
-        "..HHHHH..HHHHH..",
-        ".HHHHHH..HHHHHH.",
-        ".HHHHHH..HHHHHHH",
+    private val BIG_PASS = arrayOf(
+        "......rrrrr.....",
+        "....rrrrrrs.....",
+        "...rrrrrrss.....",
+        "...rrrrrrrrrrr..",
+        "...hhhsshsss....",
+        "..hsshsshhssss..",
+        "..hsshhssssssss.",
+        ".hhsshhssshssss.",
+        ".hhssssshhhhhh..",
+        ".hhhssssshhhhh..",
+        "...hhssssssss...",
+        "....rsssssh.....",
+        "....hrhhhhrh....",
+        "...hhrhhhhrhh...",
+        "..hhhrhhhhrhhh..",
+        ".hhhhrhhhhrhhhh.",
+        ".hhhrrhhhhrrhhh.",
+        "hhhhrrhhhhrrhhhh",
+        "hhhhrrrrrrrrhhhh",
+        "hhhhrsrrrrsrhhhh",
+        "ssssrrrrrrrrssss",
+        "ssssrrrrrrrrssss",
+        ".sssrrrrrrrrsss.",
+        ".ssrrrrrrrrrrss.",
+        "..rrrrrrrrrrrr..",
+        ".rrrrrr..rrrrrr.",
+        ".rrrrr....rrrrr.",
+        ".rrrrr....rrrrr.",
+        "..hhhh....hhhh..",
+        "..hhhh....hhhh..",
+        "..........hhhhhh",
+        "..........hhhhhh",
     )
-    private val BIG_LEGS_STRIDE = arrayOf(
-        "...BBBB..BBBB...",
-        "..BBBB....BBBB..",
-        "..BBBB....BBBB..",
-        ".BBBB......BBBB.",
-        ".BBBB......BBBB.",
-        "BBBB........BBBB",
-        "BBBB........BBBB",
-        "BBB..........BBB",
-        "HHHH.......HHHHH",
-        "HHHH.......HHHHH",
-        "HHH........HHHHH",
+    private val BIG_STRIDE = arrayOf(
+        "......rrrrr.....",
+        "....rrrrrrs.....",
+        "...rrrrrrss.....",
+        "...rrrrrrrrrrr..",
+        "...hhhsshsss....",
+        "..hsshsshhssss..",
+        "..hsshhssssssss.",
+        ".hhsshhssshssss.",
+        ".hhssssshhhhhh..",
+        ".hhhssssshhhhh..",
+        "...hhssssssss...",
+        ".....hhhss......",
+        "....rrrrhhr...s.",
+        "...hhhhrrhhr.sss",
+        "..hhhhhhrrhrhsss",
+        ".hhhhhhhrrhhrsss",
+        ".hhhhhhhrrhhrhsh",
+        ".hhhhhhrrrhhrhh.",
+        "hhhhhhrrrsrhsh..",
+        "hhhhrrrrrrrrr...",
+        "sssssrrrrrrrr...",
+        "sssssrrrrrrrr..h",
+        "ssssrrrrrrrrr.hh",
+        ".sssrrrrrrrhhhhh",
+        "...rhrrrrrrhhhhh",
+        "..hrrhrrrrrhhhhh",
+        "hhhrrrhhrrrhhhhh",
+        "hhhhrrrr...hhhhh",
+        "hhhhhr..........",
+        ".hhh............",
+        ".hhh............",
+        "..hhh...........",
     )
-    private val BIG_LEGS_PASS = arrayOf(
-        "....BBBBBBBB....",
-        "....BBBBBBBB....",
-    ) + Array(6) { ".....BBBBBB....." } + arrayOf(
-        "....HHHHHHHH....",
-        "...HHHHHHHHHH...",
-        "...HHHHHHHHHH...",
+    val BIG_WALK_CYCLE = arrayOf(BIG_STAND, BIG_PASS, BIG_STRIDE, BIG_PASS)
+    /** Super Mario in the air. */
+    val BIG_JUMP = arrayOf(
+        "......rrrrr.....",
+        "....rrrrrrs.....",
+        "...rrrrrrss.....",
+        "...rrrrrrrrrrr..",
+        "...hhhsshsss....",
+        "..hsshsshhssss..",
+        "..hsshhssssssss.",
+        ".hhsshhssshssss.",
+        ".hhssssshhhhhh..",
+        ".hhhssssshhhhh..",
+        "...hhssssssss...",
+        ".....hhhss......",
+        "....rrrrhhr...s.",
+        "...hhhhrrhhr.sss",
+        "..hhhhhhrrhrhsss",
+        ".hhhhhhhrrhhrsss",
+        ".hhhhhhhrrhhrhsh",
+        ".hhhhhhrrrhhrhh.",
+        "hhhhhhrrrsrhsh..",
+        "hhhhrrrrrrrrr...",
+        "sssssrrrrrrrr...",
+        "sssssrrrrrrrr..h",
+        "ssssrrrrrrrrr.hh",
+        ".sssrrrrrrrhhhhh",
+        "...rhrrrrrrhhhhh",
+        "..hrrhrrrrrhhhhh",
+        "hhhrrrhhrrrhhhhh",
+        "hhhhrrrr...hhhhh",
+        "hhhhhr..........",
+        ".hhh............",
+        ".hhh............",
+        "..hhh...........",
     )
-    private val BIG_WALK_1 = BIG_HEAD + BIG_TORSO + BIG_LEGS_STRIDE
-    private val BIG_WALK_2 = BIG_HEAD + BIG_TORSO + BIG_LEGS_STAND
-    private val BIG_WALK_3 = BIG_HEAD + BIG_TORSO + BIG_LEGS_PASS
-    val BIG_WALK_CYCLE = arrayOf(BIG_WALK_1, BIG_WALK_2, BIG_WALK_3, BIG_WALK_2)
-    val BIG_STAND = BIG_WALK_2
-    val BIG_JUMP = JUMP.copyOfRange(0, 8) + BIG_TORSO_JUMP + BIG_LEGS_STRIDE
 
     // ---- Enemies (face left, towards Mario) -----------------------------------------------------------------------
 
     /** Mirrored every 200 ms so its feet shuffle. */
     val GOOMBA = arrayOf(
-        "...NNNN...",
-        ".NNNNNNNN.",
-        "NKWNNNNWKN",
-        "NNNNNNNNNN",
-        ".NNTTTTNN.",
-        "..TTTTTT..",
-        ".KKTT.TKK.",
-        "KKK...KKK.",
+        "......aaaa......",
+        ".....aaaaaa.....",
+        "....aaaaaaaa....",
+        "...aaaaaaaaaa...",
+        "..akkaaaaaakka..",
+        ".aaapkaaaakpaaa.",
+        ".aaapkkkkkkpaaa.",
+        "aaaapkpaapkpaaaa",
+        "aaaapppaapppaaaa",
+        "aaaaaaaaaaaaaaaa",
+        ".aaaappppppaaaa.",
+        "....pppppppp....",
+        "....ppppppppkk..",
+        "...kkpppppkkkkk.",
+        "...kkkpppkkkkkk.",
+        "....kkk..kkkkk..",
     )
     val GOOMBA_FLAT = arrayOf(
-        ".NNNNNNNN.",
-        "NKWNNNNWKN",
-        "KKK....KKK",
+        ".aaapkaaaakpaaa.",
+        ".aaapkkkkkkpaaa.",
+        "aaaapppaapppaaaa",
+        "aaaaaaaaaaaaaaaa",
+        "....pppppppp....",
+        "...kkkpppkkkkkk.",
     )
     val KOOPA = arrayOf(
-        ".UU.......",
-        "UUUU......",
-        "UKUU......",
-        "UUUU......",
-        ".UU.GGGG..",
-        ".UUGLGLGG.",
-        "..UGGLGLGG",
-        "..UWGGGGGW",
-        "...WWWWWWW",
-        "...UU..UU.",
-        "..UUU.UUU.",
+        "...W............",
+        "..WWW...........",
+        "..WWWs..........",
+        ".seWWss.........",
+        ".seWWss.........",
+        ".seWWss.........",
+        ".sWWWss.........",
+        "sssWsss.........",
+        "sesssss.........",
+        "ssssss..eeeee...",
+        "sss.ss.eseeese..",
+        "ss..ss.eeseseee.",
+        "ss.ssWeeeeseWWe.",
+        ".s.ssWeeeseseWe.",
+        "...ssWseseeeses.",
+        "..ssWWeseeeeese.",
+        "...sWeseseeeses.",
+        "...sWseeeseseee.",
+        "....Weeeeeseeee.",
+        "....WWeeeseseWWW",
+        "...ssWWWseeWWW..",
+        "..sssssWWWWWsss.",
+        ".sssss......ssss",
     )
-    /** A stomped Koopa: the shell slides away. */
+    /** A stomped Koopa: the shell slides away and knocks out whatever it meets. */
     val SHELL = arrayOf(
-        "...GGGG...",
-        "..GLGLGG..",
-        ".GLGLGLGG.",
-        ".GGLGLGGG.",
-        "WWWWWWWWWW",
-        ".WWWWWWWW.",
+        ".....seeees.....",
+        "....eessssee....",
+        "...eeseeeesee...",
+        "...eseeeeeese...",
+        "..eseeeeeeeese..",
+        "..seseeeeeeses..",
+        ".seeeseeeeseees.",
+        ".eeeeesssseeeee.",
+        "WWWeeseeeeseeWWW",
+        "WWWWseeeeeesWWWW",
+        "...WWeeeeeeWW...",
+        "....WWeeeeWW....",
+        ".....WWWWWW.....",
+        "......WWWW......",
+    )
+    /** Fire-proof: a fireball is wasted on it, so it has to be stomped. */
+    val BUZZY = arrayOf(
+        "......kkkk......",
+        "....kkkkkkkk....",
+        "...kkkkkkkkkk...",
+        "..kkkkkkkaakkk..",
+        ".kkkkkkkkapakk..",
+        ".kkkkkkkkkaakk..",
+        "aaaakkkkkkkkkkk.",
+        ".kkaakkkkkkkkkk.",
+        ".kkkakkkkkkkkkk.",
+        "kkpkakkkkkkkkkk.",
+        "kkkkakkkkkkkkkk.",
+        "kkkkakkkkkkkkkk.",
+        ".kkpaakkkkkaaaaa",
+        "..pppaakkaaappp.",
+        ".pppp.aaaa..pppp",
+    )
+    val BUZZY_SHELL = arrayOf(
+        "......kkkk......",
+        "....kkkkkkkk....",
+        "...kkkkaakkkk...",
+        "..kkkkappakkkk..",
+        "..kkkkkaakkkkk..",
+        "..kkkkkkkkkkkk..",
+        ".kkkkkkkkkkkkkk.",
+        ".kkkkkkkkkkkkkk.",
+        ".kkkkkkkkkkkkkk.",
+        ".kkkkkkkkkkkkkk.",
+        ".kkkkkkkkkkkkkk.",
+        ".kkkkkkkkkkkkkk.",
+        "aaaaakkkkkkaaaaa",
+        "....aaakkaaa....",
+        "......aaaa......",
     )
     /** Rises out of its pipe and ducks back in. */
     val PIRANHA = arrayOf(
-        "GG....GG",
-        "GWG..GWG",
-        "GGGWWGGG",
-        ".GWGGWG.",
-        "..GGGG..",
-        "...DD...",
-        "LL.DD.LL",
-        "LLLDDLLL",
-        ".LLDDLL.",
-        "...DD...",
+        "..e..........e..",
+        ".esWW......WWse.",
+        ".eeW........Wee.",
+        ".seeWW....WWees.",
+        "eeesW......Wseee",
+        "seeeeWW..WWeeees",
+        "eeseeW....Weesee",
+        "eeeee......eeeee",
+        "eseeeeW..Weeeese",
+        "eeeeseW..Weseeee",
+        ".seeeee..eeeees.",
+        ".eeseee..eeesee.",
+        "..eeees..seeee..",
+        "...eseeeeeese...",
+        ".....eseese.....",
+        "ss.....ss.....ss",
+        "sess...ss...sses",
+        ".sess..ss..sses.",
+        ".ssess.ss.ssess.",
+        "..sses.ss.sess..",
+        "..sssessssesss..",
+        "...ssssssssss...",
+        "......ssss......",
     )
 
     // ---- Ground obstacles -----------------------------------------------------------------------------------------
 
-    /** A short pipe, smaller than Mario so he clears it with one jump or lands on top. */
+    /** Two of the same block side by side: the course's obstacles are two bricks long, as in the game. */
+    private fun wide(grid: Array<String>) = Array(grid.size) { grid[it] + grid[it] }
+
+    /** A short warp pipe two bricks wide. Mario clears it with one jump or lands on top. */
     val PIPE = arrayOf(
-        "KKKKKKKKKK",
-        "KLLGGGGDDK",
-        "KKKKKKKKKK",
-        ".KLGGGGDK.",
-        ".KLGGGGDK.",
-        ".KLGGGGDK.",
+        "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+        "kllllllllllllllllllllllllllllllk",
+        "keeeeelllllleeeeeeeeeeeeeeeeeeek",
+        "kllleellllllelleeeeeeeeeelelellk",
+        "kllleellllllelleeeeeeeeeeelelllk",
+        "kllleellllllelleeeeeeeeeelelellk",
+        "kllleellllllelleeeeeeeeeeelelllk",
+        "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+        "..kkkkkkkkkkkkkkkkkkkkkkkkkkkk..",
+        "..kllleelllllelleeeeeeeelelllk..",
+        "..kllleelllllelleeeeeeeeelellk..",
+        "..kllleelllllelleeeeeeeelelllk..",
+        "..kllleelllllelleeeeeeeeelellk..",
+        "..kllleelllllelleeeeeeeelelllk..",
+        "..kllleelllllelleeeeeeeeelellk..",
+        "..kllleelllllelleeeeeeeelelllk..",
     )
-    /** Spike trap: never stood on, always jumped. */
-    val SPIKE = arrayOf(
-        "....K....",
-        ".K.KWK.K.",
-        "..KWWWK..",
-        "KKWWKWWKK",
-        "..KWWWK..",
-        ".K.KWK.K.",
-        "....K....",
+    /** One hard block, the flagpole's base. */
+    val HARD_TILE = arrayOf(
+        "appppppppppppppk",
+        "pappppppppppppkk",
+        "ppappppppppppkkk",
+        "pppappppppppkkkk",
+        "ppppaaaaaaaakkkk",
+        "ppppaaaaaaaakkkk",
+        "ppppaaaaaaaakkkk",
+        "ppppaaaaaaaakkkk",
+        "ppppaaaaaaaakkkk",
+        "ppppaaaaaaaakkkk",
+        "ppppaaaaaaaakkkk",
+        "ppppaaaaaaaakkkk",
+        "pppkkkkkkkkkakkk",
+        "ppkkkkkkkkkkkakk",
+        "pkkkkkkkkkkkkkak",
+        "kkkkkkkkkkkkkkka",
     )
-    val HARD_BLOCK = arrayOf(
-        "TTTTTTTK",
-        "TTTTTTKK",
-        "TTNNNNKK",
-        "TTNNNNKK",
-        "TTNNNNKK",
-        "TTNNNNKK",
-        "TKKKKKKK",
-        "KKKKKKKK",
-    )
-    val BRICK_BLOCK = arrayOf(
-        "QQQKQQQQ",
-        "QQQKQQQQ",
-        "KKKKKKKK",
-        "QQQQQQKQ",
-        "QQQQQQKQ",
-        "KKKKKKKK",
-        "QQQKQQQQ",
-        "QQQKQQQQ",
-    )
-    val ICE_BLOCK = arrayOf(
-        "KKKKKKKK",
-        "KCCCCCWK",
-        "KCCCCWCK",
-        "KCCCWCCK",
-        "KCCWCCCK",
-        "KCWCCCCK",
-        "KWCCCCCK",
-        "KKKKKKKK",
-    )
-    /** Springs Mario up when he lands on it. */
-    val NOTE_BLOCK = arrayOf(
-        "KKKKKKKK",
-        "KWWWWWWK",
-        "KWWWWKWK",
-        "KWWWWKWK",
-        "KWWWWKWK",
-        "KWKKKKWK",
-        "KWWWWWWK",
-        "KKKKKKKK",
-    )
-    /** Drops away a moment after Mario stands on it. */
-    val DONUT_BLOCK = arrayOf(
-        ".TTTTTT.",
-        "TTNNNNTT",
-        "TN.NN.NT",
-        "TNN..NNT",
-        "TNN..NNT",
-        "TN.NN.NT",
-        "TTNNNNTT",
-        ".TTTTTT.",
-    )
+    val HARD_BLOCK = wide(HARD_TILE)
+    val BRICK_BLOCK = wide(arrayOf(
+        "pppppppppppppppp",
+        "aaaaaaakaaaaaaak",
+        "aaaaaaakaaaaaaak",
+        "kkkkkkkkkkkkkkkk",
+        "aaakaaaaaaakaaaa",
+        "aaakaaaaaaakaaaa",
+        "aaakaaaaaaakaaaa",
+        "kkkkkkkkkkkkkkkk",
+        "aaaaaaakaaaaaaak",
+        "aaaaaaakaaaaaaak",
+        "aaaaaaakaaaaaaak",
+        "kkkkkkkkkkkkkkkk",
+        "aaakaaaaaaakaaaa",
+        "aaakaaaaaaakaaaa",
+        "aaakaaaaaaakaaaa",
+        "kkkkkkkkkkkkkkkk",
+    ))
 
     // ---- Items from the ? blocks ----------------------------------------------------------------------------------
 
     val MUSHROOM = arrayOf(
-        "...RRRR...",
-        ".RWWRRWWR.",
-        "RWWWRRWWWR",
-        "RRWRRRRWRR",
-        "RRRRWWRRRR",
-        "RRRWWWWRRR",
-        ".TTTTTTTT.",
-        ".TTKTTKTT.",
-        ".TTKTTKTT.",
-        "..TTTTTT..",
+        "......ssss......",
+        ".....ssssrr.....",
+        "....ssssrrrr....",
+        "...sssssrrrrr...",
+        "..sssssssrrrss..",
+        ".ssrrrsssssssss.",
+        ".srrrrrssssssss.",
+        "ssrrrrrsssssrrss",
+        "ssrrrrrsssssrrrs",
+        "sssrrrsssssssrrs",
+        "ssssssssssssssss",
+        ".srrrWWWWWWrrrs.",
+        "....WWWWWWWW....",
+        "....WWWWWWsW....",
+        "....WWWWWWsW....",
+        ".....WWWWsW.....",
     )
-    val ONE_UP = Array(MUSHROOM.size) { MUSHROOM[it].replace('R', 'G') }
+    val ONE_UP = arrayOf(
+        "......ssss......",
+        ".....ssssee.....",
+        "....sssseeee....",
+        "...ssssseeeee...",
+        "..ssssssseeess..",
+        ".sseeesssssssss.",
+        ".seeeeessssssss.",
+        "sseeeeessssseess",
+        "sseeeeessssseees",
+        "ssseeesssssssees",
+        "ssssssssssssssss",
+        ".seeeWWWWWWeees.",
+        "....WWWWWWWW....",
+        "....WWWWWWsW....",
+        "....WWWWWWsW....",
+        ".....WWWWsW.....",
+    )
     val FLOWER = arrayOf(
-        "..OOOOOO..",
-        ".OWWWWWWO.",
-        "OWRRRRRRWO",
-        ".OWWWWWWO.",
-        "..OOOOOO..",
-        "....GG....",
-        "LL..GG..LL",
-        ".LLLGGLLL.",
-        "..LLGGLL..",
-        "....GG....",
+        "....WWWWWWWW....",
+        "..WWWWWWWWWWWW..",
+        ".WWWssssssssWWW.",
+        "WWsssrrrrrrsssWW",
+        "WWsssrrrrrrsssWW",
+        ".WWWssssssssWWW.",
+        "..WWWWWWWWWWWW..",
+        "....WWWWWWWW....",
+        ".......ee.......",
+        "eee....ee....eee",
+        ".eee...ee...eee.",
+        ".eeee..ee..eeee.",
+        "..eeee.ee.eeee..",
+        "..eeee.ee.eeee..",
+        "...eeeeeeeeee...",
+        "......eeee......",
     )
     val STAR = arrayOf(
-        "....OO....",
-        "....OO....",
-        "...OOOO...",
-        "OOOOOOOOOO",
-        ".OOOKOKOO.",
-        "..OOKOKO..",
-        "..OOOOOO..",
-        ".OOOOOOOO.",
-        ".OOO..OOO.",
-        "OO......OO",
+        ".......ss.......",
+        ".......ss.......",
+        "......ssss......",
+        "......ssss......",
+        ".....ssssss.....",
+        ".ssssssssssssss.",
+        ".sssssrssrsssss.",
+        "..ssssrssrssss..",
+        "...sssrssrsss...",
+        "....ssssssss....",
+        "....ssssssss....",
+        "...ssssssssss...",
+        "...ssssssssss...",
+        "...ssss..ssss...",
+        "..sss......sss..",
+        "..ss........ss..",
     )
     val FIREBALL = arrayOf(
         ".OO.",

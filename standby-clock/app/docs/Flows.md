@@ -289,3 +289,33 @@ Adds to v13 (2026-10-30). Supersedes v12/v13's "pipes and Goombas only" course a
 
 Failure paths: none new. Everything runs inside the view's frame loop and stops when the view is hidden or detached.
 
+## feature/smb_theme (Mario theme integration fixes)
+Amends v13/v14 (2026-10-31).
+
+1. **Frame loop.** `MarioSceneView` animates only while it is visible in a visible window. With the Pac-Man theme it is GONE and never animates.
+2. **Touches.** A touch that goes down on a ? block is the block's (punch on ACTION_UP). Any other touch passes to the clock behind it: a tap hides the notification card, and icons and the card work as before. The double tap still closes the clock everywhere except on the blocks.
+3. **Test broadcasts.** `TEST_MARIO_HOUR` / `TEST_MARIO_MINUTE` / `TEST_MARIO_BOTH` work only in debug builds. Release builds ignore them.
+
+Failure paths: none new.
+
+## feature/smb_theme (end-of-charge finale)
+Amends v13/v14 (2026-10-31). Mario theme only.
+
+1. **Trigger.** `ClockActivity` reads every `ACTION_BATTERY_CHANGED`: plugged in, and status FULL, or level 100, or status NOT_CHARGING at 80% or more. The change is logged as `charge complete=<bool> status=<n> level=<n>` and passed to `MarioSceneView.complete` and `ArcadeView.complete`.
+2. **Start.** Once Mario is idle (no punch running or queued, none pending after a tap, on the ground), spawning stops and a flagpole is placed past the last obstacle, off the right edge. Obstacles already out are jumped as usual.
+3. **Pole.** When one jump from here ends with Mario's hands on the pole, he leaps (550 ms), the world snaps so he is exactly at the pole, and he slides down it (1.1 s) with the flag. After a 350 ms pause he walks right, the world scrolling, until the castle door is under him.
+4. **Castle.** He fades out at the door (350 ms), the castle flag rises (1.2 s) and fireworks burst every second, alternating sides, until charging resumes or the charger is removed. Taps and minute ticks no longer move Mario; the blocks just show the time.
+5. **Reset.** Charging resuming or unplugging clears the finale and a new level starts from the middle. A clock opened while already finished starts at step 4 with Mario inside.
+6. **Previews.** "Preview: charging complete" opens `ClockActivity` with `EXTRA_PREVIEW_COMPLETE`: the chosen theme, charging layout, battery updates ignored, ending started after 1.2 s. Opening it again restarts it.
+
+Failure paths: if the phone never reports FULL or NOT_CHARGING at 80% or more (a different limit behaviour), the finale never starts and the clock shows CHARGING until unplugged; the log's `status=` and `level=` values show why.
+
+## feature/smb_theme (Pac-Man ending)
+Same trigger as the Mario finale; `ArcadeView.complete` drives it.
+
+1. **Run.** The muncher speeds from its current percent to 100, eating the remaining dots and the ghosts on the way. The run takes 45 ms per percent left, between 0.6 and 3.5 s.
+2. **Flash.** The ghosts disappear and the walls alternate white and blue every 250 ms, eight steps, then stay blue. The dots stay dimmed (eaten) and the muncher waits at the start.
+3. **Info.** LEVEL CLEAR! / the level / CHARGING ENDED replaces CHARGING; the bolt is hidden.
+4. **Reset.** Charging resuming or unplugging restores the normal frame. Opened already finished, the maze appears finished.
+
+Failure paths: as for the Mario finale, if the phone never reports the end of charging (full, or "not charging" at 80% or more), nothing starts and the event log's `status=` and `level=` show why.

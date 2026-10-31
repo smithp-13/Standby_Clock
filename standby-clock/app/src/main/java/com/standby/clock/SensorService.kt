@@ -33,7 +33,7 @@ class SensorService : NotificationListenerService(), SensorEventListener {
     // Locked, sideways and left alone on the lock screen for 5 s: show the clock (never wakes a dark screen).
     private val idleShow = Runnable { if (standbyReady()) showClock() }
     private var lockChecks = 0
-    // After the screen goes off the device only locks once its lock delay passes; check once a second.
+    // After the screen goes off the device only locks once its lock delay passes; check every LOCK_POLL_MS.
     private val awaitLock = object : Runnable {
         override fun run() {
             if (standbyReady()) showClock() else if (++lockChecks < LOCK_WAIT_MS / LOCK_POLL_MS) handler.postDelayed(this, LOCK_POLL_MS)

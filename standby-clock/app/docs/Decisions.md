@@ -518,3 +518,69 @@
 - **Verified:**
   - `:app:assembleDebug` builds with no warnings. A contact sheet rendered from the grids shows every sprite.
   - **Not yet verified on the phone:** it dropped off adb before install.
+
+## Mario theme integration fixes
+- **Date:** 2026-10-31  **Branch:** feature/smb_theme
+- **Decision:**
+  - `MarioSceneView` starts its frame loop only from `onVisibilityAggregated`, not from `onAttachedToWindow`.
+  - `MarioSceneView` takes a touch only when it goes down on a ? block. Touches anywhere else fall through to the clock behind, so tapping the scene hides the notification card as in the Pac-Man theme.
+  - The `TEST_MARIO_*` broadcasts are registered only in debuggable builds. Release builds register the time receiver as not exported.
+  - Removed the unreachable Mario track code from `ArcadeView` (coins, stars, Goombas, the PNG runner) and the unused `MarioSceneView.previewMode`. The `mario_*.png` files moved from `res/drawable-nodpi` to `app/docs/sprites`, since nothing loads them any more.
+  - `MainActivity` keeps passing `RECEIVER_NOT_EXPORTED` on every API level (the flag is ignored before 33), with lint's `InlinedApi` suppressed. Splitting the call by version made lint report the pre-33 branch as an error.
+- **Why:**
+  - Android only calls `onVisibilityAggregated` at attach for a view that is shown. With the Pac-Man theme the hidden Mario view started its loop on attach and never got the call to stop it, so it requested a frame every vsync until the first screen-off.
+  - The full-screen Mario view was clickable and consumed every touch, so the root's tap-to-hide-card never fired; the card only left after its 3 s timeout.
+  - An exported receiver for the test actions let any installed app change the displayed time.
+- **Verified:** `:app:assembleDebug` and `:app:lintDebug`. Not yet verified on the phone.
+
+## Super Mario grows whole, a mean Goomba, the real Super Mushroom, arcade colours for Pac-Man, a new main screen
+- **Date:** 2026-10-31  **Branch:** feature/smb_theme
+- **Decision:**
+  - **Super Mario:** redrawn as the whole character at 16×32: a 10-row head (wider, 1-pixel eye, moustache), a 14-row torso and 8-row legs. It replaces small Mario's 7-row head on 11 rows of legs. Stand, stride, pass and fist-up jump frames.
+  - **Goomba:** 12×12 with a mushroom-cap head, angry dark-brown brows (`M`), glaring eyes and two fangs; the feet are uneven so the 200 ms mirroring still walks it. The flattened Goomba matches.
+  - **Super Mushroom:** 12×12, outlined red cap with big white spots over a white stem with eyes (the 1-Up still swaps red for green).
+  - **Pac-Man clock face:** the digits are the arcade yellow and a paler yellow, the colon dots are the maze's cream pellets, and the date is the lilac of the "95% IN" line. They no longer follow the wallpaper (Material You), which made them pastel blue next to the yellow and blue maze. Ghosts stay solid red (user request, 2026-10-29).
+  - **Main screen:** status card (Running / Setup needed / Stopped) with one action button; setup as a numbered vertical stepper where only the first missing step is active and has its own button; theme picker cards with drawn previews; Preview; Share/Clear log. It pads itself clear of the system bars (Android 15+ draws edge to edge).
+  - `.gitignore` is GitHub's Kotlin and Android templates plus the project entries, replacing the Python template.
+- **Why:** User requests: Super Mario only had longer legs, the Goomba and mushroom did not look like the real ones, the Pac-Man theme needed reviewing, and the main screen looked unfinished.
+- **Sprites drawn, not copied:** proportions follow the NES game (Super Mario's head and body both grow), but every grid is drawn by hand, as for the earlier sprites.
+- **Verified on the SM-M346B:** main screen and stepper, the Pac-Man preview, the Mario scene with the new Goomba. Super Mario after a mushroom was checked from a rendered contact sheet only; the phone was in use at the time.
+
+## Mario walk cycle, two-brick obstacles, and the end-of-charge finale
+- **Date:** 2026-10-31  **Branch:** feature/smb_theme
+- **Decision:**
+  - **Walk:** the frame now changes every 6 Mario pixels of ground covered (was 4), so the feet stay planted instead of shuffling. Poses are contact (feet apart), down, passing (one foot under the body, the other lifted behind), down. Super Mario's stride is shorter than before; his legs no longer open into a wide V.
+  - **Obstacles:** pipes are 20×10 Mario pixels (about two ground bricks wide) with a flared lip and shading; hard, brick, ice, note and donut blocks come two wide (`wide()` repeats each row). The Piranha Plant is centred in its pipe.
+  - **Finale:** when the phone stops charging while plugged in, the Mario scene ends the level: obstacles stop spawning, a flagpole scrolls in, Mario jumps and grabs it (550 ms), slides down it with the flag (1.1 s), walks to the castle, fades out at the door (350 ms), the castle flag rises and fireworks burst on alternate sides. The pole and castle sit between and below the ? blocks, so the time stays readable. Charging resuming, or the charger coming out, starts a new level. If the clock opens when charging has already ended, it shows the finished level at once.
+  - **What counts as "stopped charging":** `ACTION_BATTERY_CHANGED` with the charger connected and status FULL, or level 100, or status NOT_CHARGING at 80% or more. Samsung's Protect battery limit is expected to show up as NOT_CHARGING; the 80% floor stops a short heat pause lower down counting as the end.
+  - **Info text:** on the Mario theme the corner text reads COURSE CLEAR! / the level / CHARGING ENDED instead of CHARGING.
+  - **Previews:** the main screen's "Preview: charging complete" button plays the chosen theme's ending on an unlocked phone, in the charging layout (superseded the first version, which forced the Mario theme). Debug builds also take `TEST_MARIO_FINISH` over adb to toggle the Mario one.
+- **Why:** User requests: the leg animation looked worse, obstacles should be two bricks long as in the game, and charging should end like a finished level.
+- **Not verified on the phone:** the finale, the new walk frames in motion, and whether the M34 reports NOT_CHARGING when its limit cuts in. The 80% floor and the status test are assumptions to check against the event log (`charge complete=... status=... level=...` lines).
+- **Research limits:** sources agree on a three-frame walk and a 16×16 tile grid but give no disassembly-level frame timing, so the 6-pixel step and the pipe widths follow the game's proportions, not measured values.
+
+## Pac-Man ending
+- **Date:** 2026-10-31  **Branch:** feature/smb_theme
+- **Decision:** When charging ends (same trigger as the Mario finale), the Pac-Man frame plays an arcade level-clear. The muncher runs the rest of the maze at 45 ms per percent (0.6 to 3.5 s in all), eating every remaining dot and the ghosts it passes. Once it is back at the start, the ghosts disappear and the maze walls flash white and blue four times (8 steps of 250 ms), then stay blue with every dot spent. The corner text reads LEVEL CLEAR! / the level / CHARGING ENDED. Charging resuming or unplugging restores the normal frame; a clock opened with charging already ended shows the finished maze at once.
+- **Why:** User request, to match the Mario level end. The flash and the vanishing ghosts follow the arcade's level-clear sequence.
+- **Not verified on the phone.** The Mario and Pac-Man endings were only checked by build and lint, and one partial run of the Mario one (the phone was in use at the time).
+
+## Mario drawn from the supplied NES reference sprites
+- **Date:** 2026-10-31  **Branch:** feature/smb_theme
+- **Decision:** Small and Super Mario now use the reference images the user supplied (`app/docs/sprites/nes-reference-*.png`), read pixel by pixel: the standing small (11×16) and Super (16×32) sprites, a small walking pose, a Super striding pose, and the Super jump. Colours are the reference's NES palette (red #B53120, brown #6B6D00, skin #EA9E22), so the overalls are red and the shirt brown, replacing the earlier blue overalls. Fire Mario is the jump sprite with red→cream and brown→red, as in the reference. The small walking pose and the Super striding pose face left in the reference and are mirrored. Two "passing" poses and the small jump are derived from the standing sprites (a foot lifted, or the legs apart). All frames are padded to 16 columns so the mirrored sprites stay centred.
+- **Why:** User request: the redrawn Super Mario and the walk still did not look like the original.
+- **Not verified on the phone.** Checked by a rendered contact sheet, build and lint only.
+
+## Wiki sprites from SMB_iCON, and the game's movement and hit rules
+- **Date:** 2026-10-31  **Branch:** feature/smb_theme
+- **Decision:**
+  - **Sprites:** `MarioSprites.kt` is generated from the Mario Wiki PNGs in `SMB_iCON/` (script kept outside the repo): small, Super and Fire Mario, Goomba, Koopa and its shell, Buzzy Beetle and shell, Piranha Plant, warp pipe, hard and brick blocks, mushroom, 1-Up, fire flower and star. The wiki only has standing poses, so Mario's walk and jump poses change only legs (small) or reuse the earlier reference stride and jump (Super). The pipe is cut from 32 to 16 pixels tall and the ? blocks shrink from 36% to 32% of the height, so a Super Mario with 17-21 pixels of headroom can still clear 16-pixel obstacles. Ground, ? block and castle colours now use the wiki's brown and gold.
+  - **Removed** the non-SMB1 obstacles (spike, ice, note and donut blocks), per `super_mario_bros_complete_mariowiki_documentation.md`. Buzzy Beetles replace them.
+  - **Momentum and friction:** the world and Mario's own walk accelerate from rest, run when the way is long, brake on the spot and skid (standing pose) when turning. Both use ACCEL/FRICTION/SKID in dp/ms².
+  - **Hold-to-jump:** gravity is halved while rising and "A" is held. Mario always takes off at the speed a fully held jump needs, and the hold time (found by bisection) sets the apex between half and all of the available height; lower is a tap. The block punch is a full hold until his head meets the block, which bumps, stops his rise and drops him.
+  - **Hit states:** Super or Fire shrinks to small with 2 s of flashing; small Mario dies (freezes 400 ms, hops, falls off screen) and returns at the middle with nearby enemies cleared, resuming any punch he was making.
+  - **Doc rules added:** a Piranha Plant stays down while Mario is next to its pipe; a kicked shell knocks out enemies; Buzzy Beetles shrug off fireballs and must be stomped; fireworks only when the last minute digit is 1, 3 or 6 (that many bursts); the flagpole grab shows 5000; after a cleared level every Goomba is a Buzzy Beetle and enemies are 1.4x faster (second quest, until the app restarts).
+  - **Not done:** timer and warning bell, warp-pipe entry, Lakitu, Spiny, Hammer Bro, springboard, coin counting (no room in a 114-pixel scene, or no meaning on a clock).
+- **Why:** User request: use the characters in SMB_iCON and the documentation's mechanics.
+- **Verified on the SM-M346B (preview):** wiki sprites render, a punch walks under the block, jumps and bumps it with the new digit and an item, mushroom and flower power-ups, a pipe with a plant, and a Buzzy Beetle. Not seen on the phone: death, the finale with fireworks, a shell kill, a skid.
+- **Note:** installing the build killed the notification listener; it was rebound with `cmd notification disallow_listener` / `allow_listener`.

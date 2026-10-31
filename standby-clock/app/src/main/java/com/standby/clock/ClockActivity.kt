@@ -63,6 +63,9 @@ class ClockActivity : Activity() {
     private var opening = false
     /** Opened from the app's Preview button: may show unlocked, and only closes on double tap or Back. */
     private var preview = false
+    /** Opened from the app's "Preview: charging complete" button: plays the end-of-charge ending of the chosen theme. */
+    private var previewComplete = false
+    private var charged = false
     private var swipeStartX = 0f
     private var swiping = false
 
@@ -74,8 +77,12 @@ class ClockActivity : Activity() {
         override fun onReceive(context: Context, intent: Intent) { if (!opening && !preview) finish() }
     }
     private val power = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) =
-            applyPower(intent.action == Intent.ACTION_POWER_CONNECTED, animate = true)
+        override fun onReceive(context: Context, intent: Intent) {
+            if (!previewComplete) applyPower(intent.action == Intent.ACTION_POWER_CONNECTED, animate = true)
+        }
+    }
+    private val batteryChanged = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) { if (!previewComplete) applyCharge(intent) }
     }
     private val refreshIcons = Runnable { showIcons() }
     private val notificationsChanged = object : BroadcastReceiver() {
@@ -88,7 +95,8 @@ class ClockActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        preview = intent.getBooleanExtra(EXTRA_PREVIEW, false)
+        previewComplete = intent.getBooleanExtra(EXTRA_PREVIEW_COMPLETE, false)
+        preview = intent.getBooleanExtra(EXTRA_PREVIEW, false) || previewComplete
         window.setBackgroundDrawableResource(android.R.color.black)
         // Lay out into the camera cutout too, so the arcade's outer wall can bend around the punch-hole.
         window.attributes = window.attributes.apply {
@@ -169,15 +177,17 @@ class ClockActivity : Activity() {
         mario.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
             if (bottom - top != oldBottom - oldTop) root.post { positionIcons() }
         }
-        val plugged = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            ?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
-        applyPower(plugged != 0, animate = false)
+        val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val plugged = battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+        applyPower(plugged != 0 || previewComplete, animate = false)
+        if (!previewComplete) battery?.let { applyCharge(it) } else playFinale()
         revealIfLandscape(resources.configuration)
         register(closer, IntentFilter(SensorService.ACTION_HIDE_CLOCK))
         // USER_PRESENT comes from SystemUI, an app uid, which a not-exported receiver silently drops. It is a
         // protected broadcast, so only the system side can send it and exporting this receiver is safe.
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(unlocked, IntentFilter(Intent.ACTION_USER_PRESENT), RECEIVER_EXPORTED)
         else registerReceiver(unlocked, IntentFilter(Intent.ACTION_USER_PRESENT))
+        register(batteryChanged, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         register(power, IntentFilter().apply {
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
@@ -201,10 +211,10 @@ class ClockActivity : Activity() {
         arcade.theme = value
         clock.visibility = if (value == Theme.MARIO) View.GONE else View.VISIBLE
         mario.visibility = if (value == Theme.MARIO) View.VISIBLE else View.GONE
-        mario.previewMode = preview
         date.typeface = if (value == Theme.MARIO) resources.getFont(R.font.press_start_2p)
         else Typeface.create(resources.getFont(R.font.nunito), 800, false)
-        date.setTextColor(if (value == Theme.MARIO) Theme.marioInk(this) else materialAccent())
+        // Pac-Man: the arcade's lilac, as on the "95% IN" line.
+        date.setTextColor(if (value == Theme.MARIO) Theme.marioInk(this) else Color.rgb(0x8F, 0x98, 0xFF))
         applyPower(plugged, animate = false)
         applyDnd()
     }
@@ -237,8 +247,13 @@ class ClockActivity : Activity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        preview = intent.getBooleanExtra(EXTRA_PREVIEW, false)
-        mario.previewMode = preview
+        previewComplete = intent.getBooleanExtra(EXTRA_PREVIEW_COMPLETE, false)
+        preview = intent.getBooleanExtra(EXTRA_PREVIEW, false) || previewComplete
+        if (previewComplete) {
+            applyTheme(Theme.current(this))
+            applyPower(true, animate = false)
+            playFinale()
+        }
     }
 
     // Standby is for the locked screen only. USER_PRESENT reached this activity ~6 s after a fingerprint
@@ -286,6 +301,7 @@ class ClockActivity : Activity() {
         unregisterReceiver(closer)
         unregisterReceiver(unlocked)
         unregisterReceiver(power)
+        unregisterReceiver(batteryChanged)
         unregisterReceiver(notificationsChanged)
         super.onDestroy()
     }
@@ -293,6 +309,33 @@ class ClockActivity : Activity() {
     private fun register(receiver: BroadcastReceiver, filter: IntentFilter) {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED)
         else registerReceiver(receiver, filter)
+    }
+
+    /**
+     * The phone has stopped charging while still plugged in: it reports full, or its own charge limit cut in (Samsung's
+     * Protect battery stops at a set percent and reports "not charging"). Below [CAPPED_FROM] percent a "not charging"
+     * report is a temporary pause (heat), not the end.
+     */
+    private fun applyCharge(battery: Intent) {
+        val level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, 0) * 100 /
+            battery.getIntExtra(BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1)
+        val status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
+        val done = battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0 && (
+            status == BatteryManager.BATTERY_STATUS_FULL || level >= 100 ||
+                status == BatteryManager.BATTERY_STATUS_NOT_CHARGING && level >= CAPPED_FROM)
+        if (done != charged) {
+            charged = done
+            EventLog.append(this, "charge complete=$done status=$status level=$level")
+        }
+        mario.complete = done
+        arcade.complete = done
+    }
+
+    /** Restarts the finale from the beginning, for the Preview button. */
+    private fun playFinale() {
+        mario.complete = false
+        arcade.complete = false
+        root.postDelayed({ mario.complete = true; arcade.complete = true }, 1_200)
     }
 
     /**
@@ -505,6 +548,8 @@ class ClockActivity : Activity() {
 
     companion object {
         const val EXTRA_PREVIEW = "com.standby.clock.PREVIEW"
+        const val EXTRA_PREVIEW_COMPLETE = "com.standby.clock.PREVIEW_COMPLETE"
+        private const val CAPPED_FROM = 80
         private const val CARD_TIMEOUT_MS = 3_000L
 
         /** True between onStart and onStop, so the service does not re-post the full-screen intent. */

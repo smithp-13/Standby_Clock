@@ -8,6 +8,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -59,8 +60,7 @@ class MarioSceneView(context: Context) : View(context) {
     private var shownMinutes = ""
 
     private var marioX = 0f
-    private var marioY = 0f // 0 on ground, 1 at peak of jump
-    private var inAir = false
+    private var inAir = false // a block punch owns Mario: its jump is stepped by the punch animator
     private var facingRight = true
     private var hourBump = 0f
     private var minuteBump = 0f
@@ -85,6 +85,13 @@ class MarioSceneView(context: Context) : View(context) {
     // Walking and jumping over obstacles, in screen pixels and milliseconds.
     private var feet = 0f // Mario's feet above the ground
     private var vy = 0f // upward speed
+    private var holdUntil = 0L // while rising before this, "A" is held and gravity is lighter: the longer, the higher
+    private var velX = 0f // Mario's own speed along the screen, px/ms: he accelerates and skids instead of snapping
+    private var scrollVel = 0f // the world's speed, px/ms: it builds up on the walk and slides to a stop
+    private var scrollTarget = 0f
+    private var hardMode = false // second quest, unlocked by clearing a level: Buzzy Beetles for Goombas, faster enemies
+    private var dyingAt = -1L // small Mario was hit: he freezes, hops up and falls off the screen
+    private var deathLaunched = false
     private var lastMarioX = 0f
     private var stepDistance = 0f
     private var waiting = false // in front of a Piranha Plant that is out of its pipe
@@ -97,18 +104,15 @@ class MarioSceneView(context: Context) : View(context) {
         GOOMBA(S.GOOMBA, false, true, 3),
         KOOPA(S.KOOPA, false, true, 2),
         SHELL(S.SHELL, false, false, 0),
-        SPIKE(S.SPIKE, false, false, 1),
+        BUZZY(S.BUZZY, false, true, 1), // fireproof; every Goomba is one in the second quest
+        BUZZY_SHELL(S.BUZZY_SHELL, false, false, 0),
         HARD(S.HARD_BLOCK, true, false, 1),
         BRICK(S.BRICK_BLOCK, true, false, 1),
-        ICE(S.ICE_BLOCK, true, false, 1),
-        NOTE(S.NOTE_BLOCK, true, false, 1),
-        DONUT(S.DONUT_BLOCK, true, false, 1),
     }
 
     private class Obstacle(var x: Float, var kind: Kind) {
         var squashedAt = -1L // Goomba stomped flat
-        var defeatedAt = -1L // hit by a fireball or the star: flips over and falls
-        var touchedAt = -1L // donut: Mario stood on it; note: last spring
+        var defeatedAt = -1L // hit by a fireball, the star or a shell: flips over and falls
         var plantGone = false
         val phase = Random.nextLong(PLANT_CYCLE_MS)
         val w get() = kind.grid[0].length
@@ -145,9 +149,29 @@ class MarioSceneView(context: Context) : View(context) {
             invalidate()
         }
 
-    var previewMode = false
-
     private var currentAnim: Animator? = null
+
+    // The level ends when the phone stops charging (full, or capped by the phone): Mario jumps at the flagpole, slides
+    // down it, walks to the castle and goes in, the castle flag rises and fireworks go off.
+    private enum class Finale { NONE, APPROACH, JUMP, SLIDE, WALK, ENTER, DONE }
+    private var finale = Finale.NONE
+    private var finaleAt = 0L
+    private var poleWorld = 0f // the flagpole's x in world pixels (same space as an obstacle's x)
+    private var flagLow = 0f // 0 = flag at the top of the pole, 1 = at the bottom
+    private var castleFlag = 0f // 0 = victory flag down, 1 = raised
+    private var marioAlpha = 255
+    private var instantDone = false
+    private var fireworks = 0 // bursts: the clock's last minute digit if it is 1, 3 or 6, as on the game's timer
+    private var fireworksAt = 0L
+
+    /** True once the phone has stopped charging; the clock sets it from the battery state. */
+    var complete = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (!value) resetFinale()
+            else if (!isAttachedToWindow) instantDone = true // opened already full: show the finished level at once
+        }
 
     // Block punches run one after another: taps count a block up, the real time is punched back in after.
     private class Punch(val isHour: Boolean, val value: String)
@@ -169,7 +193,8 @@ class MarioSceneView(context: Context) : View(context) {
     /** Places ground, bricks and ? blocks on the pixel grid. */
     private fun layoutScene() {
         if (width == 0) return
-        // Small enough, with the blocks high enough, that 32-pixel Super Mario walks and jumps under the ? blocks.
+        // Small enough, with the blocks high enough, that 32-pixel Super Mario walks and jumps under the ? blocks, with
+        // room left to clear the game's 16-pixel blocks and pipes.
         unit = height * 0.14f / 16
         bw = ceil(width / unit).toInt()
         bh = ceil(height / unit).toInt()
@@ -178,7 +203,7 @@ class MarioSceneView(context: Context) : View(context) {
         }
         ground = (bh * if (plugged) 0.82f else 0.84f).roundToInt()
         brick = ceil((bh - ground) / 2f).toInt()
-        block = minOf(bh * 0.36f, bw * 0.24f).roundToInt()
+        block = minOf(bh * 0.32f, bw * 0.24f).roundToInt()
         val gap = (block * 0.35f).roundToInt()
         blockTop = (bh * if (plugged) 0.06f else 0.05f).roundToInt()
         hourLeft = bw / 2 - gap / 2 - block
@@ -207,6 +232,7 @@ class MarioSceneView(context: Context) : View(context) {
                 "com.standby.clock.TEST_MARIO_HOUR" -> punch(isHour = true)
                 "com.standby.clock.TEST_MARIO_MINUTE" -> punch(isHour = false)
                 "com.standby.clock.TEST_MARIO_BOTH" -> { punch(isHour = true); punch(isHour = false) }
+                "com.standby.clock.TEST_MARIO_FINISH" -> complete = !complete
                 else -> update(animate = true)
             }
         }
@@ -215,21 +241,27 @@ class MarioSceneView(context: Context) : View(context) {
     @android.annotation.SuppressLint("UnspecifiedRegisterReceiverFlag")
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
+        // The adb test broadcasts come from the shell uid, so only debug builds listen for them (and export the
+        // receiver to do so); release builds take the system's time broadcasts only.
+        val debug = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_TIME_TICK)
             addAction(Intent.ACTION_TIME_CHANGED)
             addAction(Intent.ACTION_TIMEZONE_CHANGED)
-            addAction("com.standby.clock.TEST_MARIO_HOUR")
-            addAction("com.standby.clock.TEST_MARIO_MINUTE")
-            addAction("com.standby.clock.TEST_MARIO_BOTH")
+            if (debug) {
+                addAction("com.standby.clock.TEST_MARIO_HOUR")
+                addAction("com.standby.clock.TEST_MARIO_MINUTE")
+                addAction("com.standby.clock.TEST_MARIO_BOTH")
+                addAction("com.standby.clock.TEST_MARIO_FINISH")
+            }
         }
         if (android.os.Build.VERSION.SDK_INT >= 33) {
-            context.registerReceiver(ticker, filter, Context.RECEIVER_EXPORTED)
+            context.registerReceiver(ticker, filter, if (debug) Context.RECEIVER_EXPORTED else Context.RECEIVER_NOT_EXPORTED)
         } else {
             context.registerReceiver(ticker, filter)
         }
         update(animate = false)
-        if (!runAnim.isStarted) runAnim.start()
+        // The frame loop is started by onVisibilityAggregated, so a hidden scene (Pac-Man theme) never runs it.
     }
 
     override fun onDetachedFromWindow() {
@@ -256,9 +288,13 @@ class MarioSceneView(context: Context) : View(context) {
     private val marioH get() = if (power == Power.SMALL) 16 else 32
     private val starred get() = animTime < starUntil
 
-    /** Piranha Plant height out of its pipe, 0..1: up 1.5 s, down 2 s, half a second each way. */
+    /**
+     * Piranha Plant height out of its pipe, 0..1: up 1.5 s, down 2 s, half a second each way. It never comes out while
+     * Mario stands next to the pipe or on its rim.
+     */
     private fun plantRise(o: Obstacle): Float {
         if (o.kind != Kind.PIRANHA || o.plantGone) return 0f
+        if (abs(o.x - worldDistance + o.w * unit / 2 - marioX) < (o.w / 2 + PLANT_SHY) * unit) return 0f
         val t = (animTime + o.phase) % PLANT_CYCLE_MS
         return when {
             t < 500 -> t / 500f
@@ -268,12 +304,12 @@ class MarioSceneView(context: Context) : View(context) {
         }
     }
 
-    private fun donutFalling(o: Obstacle) = o.kind == Kind.DONUT && o.touchedAt >= 0 && animTime - o.touchedAt > 500
+    private fun isShell(o: Obstacle) = o.kind == Kind.SHELL || o.kind == Kind.BUZZY_SHELL
 
     private fun walkSpeed(o: Obstacle): Float = when {
         o.squashedAt >= 0 || o.defeatedAt >= 0 -> 0f
-        o.kind == Kind.SHELL -> SHELL_SPEED * dp
-        o.kind.enemy -> GOOMBA_SPEED * dp
+        isShell(o) -> SHELL_SPEED * dp
+        o.kind.enemy -> GOOMBA_SPEED * dp * if (hardMode) HARD_SPEEDUP else 1f
         else -> 0f
     }
 
@@ -286,51 +322,69 @@ class MarioSceneView(context: Context) : View(context) {
         val u = unit
         val changing = changeFrom != null && animTime - changeAt < CHANGE_MS
         if (!changing) changeFrom = null
-        val scroll = if (currentAnim == null && !inAir && !waiting && !changing) dt * WALK_SPEED * dp else 0f
+        if (instantDone && width > 0) { instantDone = false; skipToDone() }
+        // The world builds up speed on the walk and slides to a stop (friction) when Mario halts. The finale sets it outright.
+        scrollTarget = when (finale) {
+            Finale.SLIDE, Finale.ENTER, Finale.DONE -> 0f
+            Finale.JUMP, Finale.WALK -> WALK_SPEED * dp
+            else -> if (currentAnim == null && !inAir && !waiting && !changing && dyingAt < 0) WALK_SPEED * dp else 0f
+        }
+        scrollVel = if (finale.ordinal >= Finale.JUMP.ordinal) scrollTarget else when {
+            scrollVel < scrollTarget -> minOf(scrollTarget, scrollVel + ACCEL * dp * dt)
+            else -> maxOf(scrollTarget, scrollVel - FRICTION * dp * dt)
+        }
+        val scroll = scrollVel * dt
         worldDistance += scroll
         val marioVel = (marioX - lastMarioX) / dt
         stepDistance += scroll + abs(marioX - lastMarioX)
         lastMarioX = marioX
 
         if (nextSpawn == 0f) nextSpawn = worldDistance + width * 0.8f
-        if (nextSpawn - worldDistance < width + 12 * u) {
+        if (finale == Finale.NONE && nextSpawn - worldDistance < width + 16 * u) {
             val kinds = Kind.entries.filter { it.weight > 0 }
             var r = Random.nextInt(kinds.sumOf { it.weight })
-            obstacles += Obstacle(nextSpawn, kinds.first { r -= it.weight; r < 0 })
+            val kind = kinds.first { r -= it.weight; r < 0 }
+            obstacles += Obstacle(nextSpawn, if (hardMode && kind == Kind.GOOMBA) Kind.BUZZY else kind)
             nextSpawn += width * (0.45f + 0.45f * Random.nextFloat())
         }
         for (o in obstacles) o.x -= dt * walkSpeed(o)
+        // A kicked shell wipes out every enemy it runs into.
+        for (s in obstacles) if (isShell(s)) for (e in obstacles) {
+            if (e.kind.enemy && e.squashedAt < 0 && e.defeatedAt < 0 && s.x < e.x + e.w * u && s.x + s.w * u > e.x) e.defeatedAt = animTime
+        }
         obstacles.removeAll {
-            it.x - worldDistance + it.w * u < -12 * u ||
+            it.x - worldDistance + it.w * u < -16 * u ||
                 it.squashedAt >= 0 && animTime - it.squashedAt > 500 ||
-                it.defeatedAt >= 0 && animTime - it.defeatedAt > 700 ||
-                donutFalling(it) && animTime - it.touchedAt > 1300
+                it.defeatedAt >= 0 && animTime - it.defeatedAt > 700
         }
         stepItems(dt)
         stepFireballs(dt)
         // Power wears off one level at a time: Fire → Super → small.
         if (power != Power.SMALL && animTime - powerSince > POWER_MS) setPower(if (power == Power.FIRE) Power.BIG else Power.SMALL)
+        if (complete && finale == Finale.NONE && currentAnim == null && punching == null && punches.isEmpty() &&
+            !revertPending && !inAir && vy == 0f && dyingAt < 0) startFinale()
+        if (finale.ordinal >= Finale.JUMP.ordinal) { stepFinale(); return }
+        if (dyingAt >= 0) { stepDeath(dt); return }
         if (inAir || changing) return // the block punch, or the grow/shrink, owns Mario for now
 
         val left = marioX - 5 * u
         val right = marioX + 5 * u
         fun sx(o: Obstacle) = o.x - worldDistance
         fun over(o: Obstacle) = sx(o) < right && sx(o) + o.w * u > left
-        val base = obstacles.filter { it.kind.solid && it.defeatedAt < 0 && !donutFalling(it) && over(it) }
+        val base = obstacles.filter { it.kind.solid && it.defeatedAt < 0 && over(it) }
             .maxByOrNull { it.kind.grid.size }
         val support = (base?.kind?.grid?.size ?: 0) * u
         if (vy != 0f || feet > support) {
-            vy -= GRAVITY * u * dt
+            // Holding "A" while rising lightens gravity, so a longer press is a higher jump; falling is always heavy.
+            vy -= GRAVITY * u * dt * if (vy > 0f && animTime < holdUntil) HOLD_GRAVITY else 1f
             feet += vy * dt
             if (feet <= support && vy < 0) {
                 feet = support
                 vy = 0f
-                if (base?.kind == Kind.NOTE) { base.touchedAt = animTime; vy = jumpSpeed(JUMP_HEIGHT + 8) }
             }
         }
-        if (vy == 0f && base?.kind == Kind.DONUT && base.touchedAt < 0) base.touchedAt = animTime
 
-        // Contact: enemies are stomped (or knocked out by the star), spikes and Piranha Plants hurt.
+        // Contact: enemies are stomped (or knocked out by the star), Piranha Plants hurt.
         for (o in obstacles) {
             if (o.squashedAt >= 0 || o.defeatedAt >= 0 || !over(o)) continue
             when {
@@ -339,18 +393,21 @@ class MarioSceneView(context: Context) : View(context) {
                     vy < 0f -> stomp(o)
                     else -> hurt()
                 }
-                o.kind == Kind.SPIKE && feet < o.kind.grid.size * u -> if (!starred) hurt()
                 plantRise(o) > 0.3f && feet <= (S.PIPE.size + S.PIRANHA.size * plantRise(o)) * u ->
                     if (starred) o.plantGone = true else hurt()
             }
         }
+        if (dyingAt >= 0) return
         if (vy != 0f) return
         feet = support
+        // The flagpole is near enough that one jump from here ends with Mario's hands on it.
+        if (finale == Finale.APPROACH && support == 0f &&
+            poleWorld - worldDistance - marioX <= WALK_SPEED * dp * JUMP_MS + REACH * u) beginJump()
 
         // Fire Mario throws a fireball at the next enemy or Piranha Plant ahead.
         val dir = if (facingRight) 1f else -1f
         if (power == Power.FIRE && animTime - lastFire > 700 && fireballs.size < 2 && obstacles.any {
-                (it.kind.enemy && it.squashedAt < 0 && it.defeatedAt < 0 || plantRise(it) > 0.3f) &&
+                (it.kind.enemy && it.kind != Kind.BUZZY && it.squashedAt < 0 && it.defeatedAt < 0 || plantRise(it) > 0.3f) &&
                     dir * (sx(it) - marioX) in 0f..60 * u
             }) {
             lastFire = animTime
@@ -359,39 +416,235 @@ class MarioSceneView(context: Context) : View(context) {
 
         waiting = false
         for (o in obstacles) {
-            if (o.squashedAt >= 0 || o.defeatedAt >= 0 || o.kind == Kind.SHELL || donutFalling(o)) continue
+            if (o.squashedAt >= 0 || o.defeatedAt >= 0 || isShell(o)) continue
             if (starred && o.kind.enemy) continue // plough straight through
             val dist = dir * (sx(o) + o.w * u / 2 - marioX)
             if (dist <= 0f) continue
             val edge = dist - (o.w / 2f + 5) * u
-            // Piranha Plant out of its pipe: wait in front of it until it ducks back in.
-            if (plantRise(o) > 0f && edge < 8 * u && !starred) {
+            // Piranha Plant out of its pipe: stop in front of it until it ducks back in. Once Mario is close enough the
+            // plant stays down for good, so he can walk up to the pipe and jump it.
+            if (plantRise(o) > 0f && edge < PLANT_WAIT * u && !starred) {
                 waiting = currentAnim == null
                 break
             }
-            val closing = dir * (marioVel + scroll / dt + walkSpeed(o))
+            val closing = dir * (marioVel + scrollVel + walkSpeed(o))
             if (closing <= 0f) continue
             val height = o.kind.grid.size + 4f
-            val go = if (o.kind.enemy) dist <= closing * 2 * jumpSpeed(height) / (GRAVITY * u) * 0.9f
-            else edge <= closing * dt * 2 + u
+            val plan = planJump(height)
+            val go = if (o.kind.enemy) dist <= closing * plan.airMs * 0.9f else edge <= closing * dt * 2 + u
             if (go) {
-                vy = jumpSpeed(height)
+                launch(plan)
                 break
             }
         }
     }
 
-    private fun stomp(o: Obstacle) {
-        if (o.kind == Kind.KOOPA) o.kind = Kind.SHELL else o.squashedAt = animTime
-        vy = jumpSpeed(6f)
+    /** A jump worked out for a given apex: take-off speed, how long "A" is held, and the time in the air. */
+    private class Jump(val v0: Float, val holdMs: Float, val airMs: Float)
+
+    /** Height reached rising for [holdMs] under the light gravity, then under the heavy. */
+    private fun apex(v0: Float, holdMs: Float, gHold: Float, gFall: Float): Float {
+        val t = minOf(holdMs, v0 / gHold)
+        val v1 = v0 - gHold * t
+        return v0 * t - 0.5f * gHold * t * t + v1 * v1 / (2 * gFall)
     }
 
-    /** Knocked back to small Mario (or just bounced, if already small), then a moment of safety. */
+    /**
+     * Plans a jump [height] Mario pixels high from where his feet are. Mario always takes off at the speed that carries
+     * a fully held jump to the highest point he has room for (his head must not rise into the ? blocks); how long the
+     * button is held then sets the apex, between half that height and all of it. Lower than half is a tap: no hold.
+     * With [limit] off the apex is exactly [height] (the block punch, which wants to reach the block).
+     */
+    private fun planJump(height: Float, limit: Boolean = true): Jump {
+        val room = (ground - marioH - blockTop - block - 1) - feet / unit
+        val full = if (limit) room.coerceAtLeast(2f) else height
+        val want = if (limit) minOf(height, room).coerceAtLeast(1f) else height
+        val gFall = GRAVITY * unit
+        val gHold = gFall * HOLD_GRAVITY
+        if (want <= full / 2) {
+            val v0 = sqrt(2 * gFall * want * unit)
+            return Jump(v0, 0f, 2 * v0 / gFall)
+        }
+        val v0 = sqrt(2 * gHold * full * unit)
+        var lo = 0f
+        var hi = v0 / gHold
+        repeat(18) {
+            val mid = (lo + hi) / 2
+            if (apex(v0, mid, gHold, gFall) < want * unit) lo = mid else hi = mid
+        }
+        val hold = (lo + hi) / 2
+        val top = apex(v0, hold, gHold, gFall)
+        val rise = minOf(hold, v0 / gHold) + (v0 - gHold * minOf(hold, v0 / gHold)) / gFall
+        return Jump(v0, hold, rise + sqrt(2 * top / gFall))
+    }
+
+    private fun launch(plan: Jump) {
+        vy = plan.v0
+        holdUntil = animTime + plan.holdMs.toLong()
+    }
+
+    /** Small Mario's death: he freezes, hops up, falls off the screen and comes back at the checkpoint. */
+    private fun stepDeath(dt: Float) {
+        val t = animTime - dyingAt
+        feet += vy * dt
+        if (t < DEATH_FREEZE_MS) return
+        if (!deathLaunched) {
+            deathLaunched = true
+            val plan = planJump(DEATH_HOP, limit = false)
+            launch(plan)
+        }
+        vy -= GRAVITY * unit * dt * if (vy > 0f && animTime < holdUntil) HOLD_GRAVITY else 1f
+        if (feet < -(bh - ground + 20) * unit) respawn()
+    }
+
+    /** Pole height in buffer pixels: a little above the ? blocks' underside, so Mario's grab stays between them. */
+    private val poleH get() = ground - blockTop - block + 8
+
+    /** Mario's grab height on the pole: his hands just under its top. */
+    private fun grabFeet() = (poleH - 4 - marioH) * unit
+
+    private fun startFinale() {
+        val clear = obstacles.maxOfOrNull { it.x + it.w * unit } ?: worldDistance
+        // Past the last obstacle, and off the right edge so the pole scrolls in.
+        poleWorld = maxOf(worldDistance + width + 8 * unit, clear + 60 * unit)
+        finale = Finale.APPROACH
+        finaleAt = animTime
+        setFireworks()
+    }
+
+    /** As in the game: fireworks only if the last digit of the clock is 1, 3 or 6, that many bursts. */
+    private fun setFireworks() {
+        val digit = Calendar.getInstance()[Calendar.MINUTE] % 10
+        fireworks = if (digit == 1 || digit == 3 || digit == 6) digit else 0
+    }
+
+    private fun beginJump() {
+        finale = Finale.JUMP
+        finaleAt = animTime
+        facingRight = true
+        waiting = false
+        vy = 0f
+    }
+
+    private fun stepFinale() {
+        val t = (animTime - finaleAt).toFloat()
+        when (finale) {
+            Finale.JUMP -> {
+                val p = (t / JUMP_MS).coerceAtMost(1f)
+                feet = grabFeet() * (1 - (1 - p) * (1 - p)) // rises fast, easing into the grab
+                if (p >= 1f) {
+                    // Hands on the pole, whatever the frame timing did to the approach.
+                    worldDistance = poleWorld - marioX - REACH * unit
+                    finale = Finale.SLIDE
+                    finaleAt = animTime
+                }
+            }
+            Finale.SLIDE -> {
+                val p = (t / SLIDE_MS).coerceAtMost(1f)
+                feet = grabFeet() * (1 - p)
+                flagLow = p
+                if (t >= SLIDE_MS + 350) { finale = Finale.WALK; finaleAt = animTime; feet = 0f }
+            }
+            Finale.WALK -> {
+                feet = 0f
+                if (worldDistance + marioX >= doorWorld()) { finale = Finale.ENTER; finaleAt = animTime }
+            }
+            Finale.ENTER -> {
+                marioAlpha = (255 * (1 - t / ENTER_MS)).toInt().coerceIn(0, 255)
+                if (t >= ENTER_MS) { finale = Finale.DONE; finaleAt = animTime; fireworksAt = animTime; hardMode = true }
+            }
+            Finale.DONE -> castleFlag = (t / 1_200f).coerceAtMost(1f)
+            else -> Unit
+        }
+    }
+
+    private fun doorWorld() = poleWorld + CASTLE_GAP * unit
+
+    /** Opened with the phone already finished charging: the level is over, Mario is in the castle. */
+    private fun skipToDone() {
+        obstacles.clear()
+        items.clear()
+        fireballs.clear()
+        marioX = width / 2f
+        lastMarioX = marioX
+        poleWorld = worldDistance + marioX - CASTLE_GAP * unit
+        flagLow = 1f
+        castleFlag = 1f
+        marioAlpha = 0
+        feet = 0f
+        vy = 0f
+        finale = Finale.DONE
+        finaleAt = animTime - 1_200
+        fireworksAt = animTime
+        hardMode = true
+        setFireworks()
+    }
+
+    /** Charging resumed or the charger came out: a new level starts from the middle of the screen. */
+    private fun resetFinale() {
+        finale = Finale.NONE
+        flagLow = 0f
+        castleFlag = 0f
+        marioAlpha = 255
+        instantDone = false
+        obstacles.clear()
+        nextSpawn = 0f
+        marioX = width / 2f
+        lastMarioX = marioX
+        feet = 0f
+        vy = 0f
+        waiting = false
+        facingRight = true
+    }
+
+    /** A stomp squashes a Goomba, turns a Koopa or Buzzy Beetle into its shell, and bounces Mario off it. */
+    private fun stomp(o: Obstacle) {
+        when (o.kind) {
+            Kind.KOOPA -> o.kind = Kind.SHELL
+            Kind.BUZZY -> o.kind = Kind.BUZZY_SHELL
+            else -> o.squashedAt = animTime
+        }
+        launch(planJump(STOMP_BOUNCE))
+    }
+
+    /**
+     * One hit shrinks Super or Fire Mario to small, with a couple of seconds of flashing safety; small Mario loses a
+     * life.
+     */
     private fun hurt() {
         if (animTime < safeUntil) return
+        if (power == Power.SMALL) { die(); return }
         safeUntil = animTime + 2_000
-        if (power != Power.SMALL) setPower(Power.SMALL)
-        vy = jumpSpeed(6f)
+        setPower(Power.SMALL)
+        launch(planJump(6f))
+    }
+
+    private fun die() {
+        dyingAt = animTime
+        deathLaunched = false
+        vy = 0f
+        holdUntil = 0
+        waiting = false
+        currentAnim?.cancel()
+        currentAnim = null
+        // The punch he was on his way to makes starts again from the checkpoint.
+        punching?.let { punches.addFirst(it) }
+        punching = null
+    }
+
+    /** Back at the checkpoint: the middle of the screen, small, with the enemies nearby cleared away. */
+    private fun respawn() {
+        dyingAt = -1
+        marioX = width / 2f
+        lastMarioX = marioX
+        feet = 0f
+        vy = 0f
+        scrollVel = 0f
+        velX = 0f
+        facingRight = true
+        safeUntil = animTime + 2_500
+        obstacles.removeAll { (it.x - worldDistance) in marioX - 60 * unit..marioX + 90 * unit }
+        startPunches()
     }
 
     private fun setPower(next: Power) {
@@ -400,15 +653,6 @@ class MarioSceneView(context: Context) : View(context) {
         changeAt = animTime
         power = next
         powerSince = animTime
-    }
-
-    /**
-     * Take-off speed for a jump [height] Mario pixels high, from where his feet are now, capped so his head never
-     * rises into the ? blocks.
-     */
-    private fun jumpSpeed(height: Float): Float {
-        val room = (ground - marioH - blockTop - block - 1) - feet / unit
-        return unit * sqrt(2 * GRAVITY * minOf(height, room).coerceAtLeast(1f))
     }
 
     /** The punched block's item, chosen by Mario's state: mushroom → flower → star or 1-Up. One at a time. */
@@ -474,12 +718,13 @@ class MarioSceneView(context: Context) : View(context) {
             if (f.y <= 0f) { f.y = 0f; f.vy = 0.05f }
             val hit = obstacles.firstOrNull { o ->
                 val left = (o.x - worldDistance) / unit
-                o.squashedAt < 0 && o.defeatedAt < 0 && o.kind != Kind.SHELL && f.x in left..left + o.w &&
+                o.squashedAt < 0 && o.defeatedAt < 0 && !isShell(o) && f.x in left..left + o.w &&
                     f.y < o.kind.grid.size + S.PIRANHA.size * plantRise(o)
             }
             when {
                 hit != null -> {
-                    if (hit.kind.enemy) hit.defeatedAt = animTime
+                    // A Buzzy Beetle shrugs fireballs off.
+                    if (hit.kind.enemy && hit.kind != Kind.BUZZY) hit.defeatedAt = animTime
                     else if (plantRise(hit) > 0.3f) hit.plantGone = true
                     it.remove()
                 }
@@ -500,7 +745,7 @@ class MarioSceneView(context: Context) : View(context) {
     }
 
     private fun update(animate: Boolean) {
-        if (!animate || !isShown || width == 0) {
+        if (!animate || !isShown || width == 0 || finale != Finale.NONE) {
             val (hour, minute) = realTime()
             shownHours = hourText(hour)
             shownMinutes = "%02d".format(minute)
@@ -520,6 +765,7 @@ class MarioSceneView(context: Context) : View(context) {
 
     /** A tap on a block: one more punch counting it up. [REVERT_MS] after the last tap the real time is punched back. */
     fun punch(isHour: Boolean) {
+        if (finale != Finale.NONE) return // the level is ending: the blocks just show the time
         val now = target(isHour).toIntOrNull() ?: return
         val next = if (!isHour) "%02d".format((now + 1) % 60)
         else hourText(if (is24) (now + 1) % 24 else now % 12 + 1)
@@ -569,7 +815,7 @@ class MarioSceneView(context: Context) : View(context) {
         }
         punching = p
         val x = ((if (p.isHour) hourLeft else minuteLeft) + block / 2f) * unit
-        currentAnim = walkTo(x, if (abs(x - marioX) < unit) 0L else 350L) {
+        currentAnim = walkTo(x) {
             currentAnim = jumpAndPunch(p.isHour, p.value) { nextPunch() }.also { it.start() }
         }.also { it.start() }
     }
@@ -581,51 +827,94 @@ class MarioSceneView(context: Context) : View(context) {
             reconcile()
             if (punching != null) return
         }
-        currentAnim = walkTo(width / 2f, 350L) {
+        currentAnim = walkTo(width / 2f) {
             facingRight = true
             currentAnim = null
         }.also { it.start() }
     }
 
-    /** Walks Mario from current position to [destX] over [duration] ms, facing the direction of travel. */
-    private fun walkTo(destX: Float, duration: Long, onDone: () -> Unit): ValueAnimator {
-        val startX = marioX
-        facingRight = destX >= startX
-        return ValueAnimator.ofFloat(startX, destX).apply {
-            this.duration = duration
+    /**
+     * Walks Mario to [destX] with momentum: he speeds up from rest, runs if it is far, brakes to stop on the spot and
+     * skids when he has to turn round. The animator is only the frame clock; it ends when he has arrived.
+     */
+    private fun walkTo(destX: Float, onDone: () -> Unit): ValueAnimator {
+        var last = animTime
+        return ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 10_000
             interpolator = LinearInterpolator()
-            addUpdateListener {
-                marioX = it.animatedValue as Float
+            addUpdateListener { anim ->
+                val dt = (animTime - last).toFloat()
+                if (dt <= 0f) return@addUpdateListener
+                last = animTime
+                val dist = abs(destX - marioX)
+                val dir = if (destX >= marioX) 1f else -1f
+                facingRight = dir > 0
+                val walk = WALK_SPEED * dp
+                val top = walk * if (dist > RUN_DISTANCE * unit) RUN_FACTOR else 1f
+                val brake = velX * velX / (2 * FRICTION * dp)
+                velX = when {
+                    velX * dir < 0f -> velX + dir * SKID * dp * dt // turning round: skid to a stop first
+                    velX * dir > 0f && dist <= brake -> velX - dir * FRICTION * dp * dt // slide to a halt on the spot
+                    else -> (velX + dir * ACCEL * dp * dt).coerceIn(-top, top)
+                }
+                marioX += velX * dt
+                val arrived = dist < unit && abs(velX) < walk * 0.25f || (destX - marioX) * dir < 0f
+                if (arrived) {
+                    marioX = destX
+                    velX = 0f
+                    anim.end()
+                }
                 invalidate()
             }
             addListener(object : AnimatorListenerAdapter() {
                 private var cancelled = false
-                override fun onAnimationCancel(animation: Animator) { cancelled = true }
+                override fun onAnimationCancel(animation: Animator) { cancelled = true; velX = 0f }
                 override fun onAnimationEnd(animation: Animator) {
                     if (cancelled) return // a new punch took over from where Mario stands
                     marioX = destX
+                    velX = 0f
                     onDone()
                 }
             })
         }
     }
 
-    /** Leaps straight up to hit the target block at apex, bumps it, updates digit, pops an item, and lands. */
+    /**
+     * A full-height jump from under a block: Mario holds "A" until his head meets the block, which bumps (and pops an
+     * item and the new digit), stops his rise and drops him back down.
+     */
     private fun jumpAndPunch(targetIsHour: Boolean, newValue: String, onDone: () -> Unit): ValueAnimator {
         inAir = true
         facingRight = true
-        var hit = false
+        val reach = (ground - blockTop - block - marioH).toFloat() // feet height at which his head meets the block
+        var last = animTime
+        var hitAt = -1L
+        launch(planJump(reach + 3, limit = false))
         return ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 620
+            duration = 4_000
             interpolator = LinearInterpolator()
             addUpdateListener { anim ->
-                val p = anim.animatedValue as Float
-                marioY = sin(Math.PI * p).toFloat()
-                val bump = if (p in 0.42f..0.85f) sin(Math.PI * (p - 0.42f) / 0.43f).toFloat() else 0f
-                if (targetIsHour) hourBump = bump else minuteBump = bump
-                if (p >= 0.5f) {
+                val dt = (animTime - last).toFloat()
+                if (dt <= 0f) return@addUpdateListener
+                last = animTime
+                vy -= GRAVITY * unit * dt * if (vy > 0f && animTime < holdUntil) HOLD_GRAVITY else 1f
+                feet += vy * dt
+                if (hitAt < 0 && feet >= reach * unit) {
+                    hitAt = animTime
+                    feet = reach * unit
+                    vy = -BONK * unit
+                    holdUntil = 0
                     if (targetIsHour) shownHours = newValue else shownMinutes = newValue
-                    if (!hit) { hit = true; spawnItem(targetIsHour) }
+                    spawnItem(targetIsHour)
+                }
+                if (hitAt >= 0) {
+                    val bump = sin(Math.PI * ((animTime - hitAt) / BUMP_MS).coerceAtMost(1f)).toFloat()
+                    if (targetIsHour) hourBump = bump else minuteBump = bump
+                }
+                if (feet <= 0f && vy < 0f) {
+                    feet = 0f
+                    vy = 0f
+                    anim.end()
                 }
                 invalidate()
             }
@@ -633,8 +922,9 @@ class MarioSceneView(context: Context) : View(context) {
                 private var cancelled = false
                 override fun onAnimationCancel(animation: Animator) { cancelled = true }
                 override fun onAnimationEnd(animation: Animator) {
-                    marioY = 0f
                     inAir = false
+                    vy = 0f
+                    feet = maxOf(feet, 0f)
                     if (targetIsHour) hourBump = 0f else minuteBump = 0f
                     invalidate()
                     if (!cancelled) onDone()
@@ -655,7 +945,9 @@ class MarioSceneView(context: Context) : View(context) {
         }
     }
 
+    // Only the ? blocks take touches; anywhere else falls through to the clock behind, which hides the card.
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.action == MotionEvent.ACTION_DOWN && blockAt(event.x, event.y) == null) return false
         if (event.action == MotionEvent.ACTION_UP) {
             blockAt(event.x, event.y)?.let { punch(isHour = it) }
             performClick()
@@ -733,7 +1025,7 @@ class MarioSceneView(context: Context) : View(context) {
             if (rise > 0f) {
                 c.save()
                 c.clipRect(0, 0, bw, ground - S.PIPE.size)
-                drawGrid(c, S.PIRANHA, x + 1, ground - S.PIPE.size - (S.PIRANHA.size * rise).roundToInt(), false)
+                drawGrid(c, S.PIRANHA, x + (o.w - S.PIRANHA[0].length) / 2, ground - S.PIPE.size - (S.PIRANHA.size * rise).roundToInt(), false)
                 c.restore()
             }
             val grid = if (o.squashedAt >= 0) S.GOOMBA_FLAT else o.kind.grid
@@ -743,13 +1035,13 @@ class MarioSceneView(context: Context) : View(context) {
                     val t = (animTime - o.defeatedAt).toFloat()
                     drawGrid(c, grid, x, top - 6 + (t * t * 0.00005f).roundToInt(), false, flipV = true)
                 }
-                donutFalling(o) -> drawGrid(c, grid, x, top + ((animTime - o.touchedAt - 500) * 0.04f).roundToInt(), false)
-                o.kind == Kind.DONUT && o.touchedAt >= 0 -> drawGrid(c, grid, x + ((animTime / 50) % 2).toInt(), top, false)
-                o.kind == Kind.NOTE && animTime - o.touchedAt < 150 -> drawGrid(c, grid, x, top + 1, false)
-                o.kind == Kind.GOOMBA && o.squashedAt < 0 -> drawGrid(c, grid, x, top, (animTime / 200) % 2 == 0L)
+                (o.kind == Kind.GOOMBA || o.kind == Kind.BUZZY) && o.squashedAt < 0 ->
+                    drawGrid(c, grid, x, top, (animTime / 200) % 2 == 0L)
                 else -> drawGrid(c, grid, x, top, false)
             }
         }
+
+        if (finale != Finale.NONE) drawFinale(c)
 
         // 7. Fireballs
         for (f in fireballs) {
@@ -763,16 +1055,19 @@ class MarioSceneView(context: Context) : View(context) {
             if ((animTime - changeAt) / 100 % 2 == 0L) change != Power.SMALL else power != Power.SMALL
         } else power != Power.SMALL
         val height = if (big) 32 else 16
-        val maxRise = (ground - height - (blockTop + block)) * unit * 0.95f
-        val rise = if (inAir) maxOf(feet, marioY * maxRise) else feet
-        val airborne = inAir || vy != 0f
-        val step = ((stepDistance / (4 * unit)).toInt()) % S.WALK_CYCLE.size
+        val rise = feet
+        val dying = dyingAt >= 0
+        val airborne = inAir || vy != 0f || dying || finale == Finale.JUMP || finale == Finale.SLIDE
+        // Braking from a walk (or turning round) he plants his feet and slides, in the standing pose.
+        val skidding = !airborne && finale == Finale.NONE &&
+            (scrollVel > WALK_SPEED * dp * 0.3f && scrollTarget == 0f || velX * (if (facingRight) 1f else -1f) < 0f)
+        val step = ((stepDistance / (STEP_PX * unit)).toInt()) % S.WALK_CYCLE.size
         val frame = when {
             big && airborne -> S.BIG_JUMP
-            big && waiting -> S.BIG_STAND
+            big && (waiting || skidding) -> S.BIG_STAND
             big -> S.BIG_WALK_CYCLE[step]
             airborne -> S.JUMP
-            waiting -> S.STAND
+            waiting || skidding -> S.STAND
             else -> S.WALK_CYCLE[step]
         }
         val swap = when {
@@ -782,7 +1077,9 @@ class MarioSceneView(context: Context) : View(context) {
         }
         val top = ground - height - (rise / unit).roundToInt()
         val flashing = animTime < safeUntil && (animTime / 60) % 2 == 0L
-        if (!flashing) drawGrid(c, frame, (marioX / unit).roundToInt() - 8, top, !facingRight, swap = swap)
+        if (!flashing && marioAlpha > 0) {
+            drawGrid(c, frame, (marioX / unit).roundToInt() - 8, top, !facingRight, swap = swap, alpha = marioAlpha)
+        }
 
         // 9. "1UP" rising from Mario's head
         if (oneUpAt >= 0 && animTime - oneUpAt < 1_200) {
@@ -790,12 +1087,106 @@ class MarioSceneView(context: Context) : View(context) {
         }
     }
 
+    /** The flagpole with its flag, the castle, and (once Mario is in) fireworks over it. */
+    private fun drawFinale(c: Canvas) {
+        val g = ground
+        val pole = ((poleWorld - worldDistance) / unit).roundToInt()
+        val door = ((doorWorld() - worldDistance) / unit).roundToInt()
+        val top = g - poleH
+        if (pole in -12..bw + 12) {
+            paint.color = S.PALETTE['G']!!
+            c.drawRect(pole.toFloat(), top.toFloat(), pole + 2f, g.toFloat(), paint)
+            paint.color = S.PALETTE['L']!!
+            c.drawRect(pole - 1f, top - 3f, pole + 3f, top + 1f, paint) // the ball on top
+            drawGrid(c, S.HARD_TILE, pole - 7, g - 16, false)
+            // The flag hangs left of the pole and slides down it with Mario.
+            val fy = top + 3 + ((poleH - 17) * flagLow).roundToInt()
+            for (r in 0 until 7) {
+                val w = 8 - r
+                paint.color = Color.WHITE
+                c.drawRect((pole - w).toFloat(), (fy + r).toFloat(), pole.toFloat(), fy + r + 1f, paint)
+            }
+            paint.color = S.PALETTE['G']!!
+            c.drawRect(pole - 4f, fy + 2f, pole - 2f, fy + 4f, paint)
+            // Grabbing the pole near its top is worth the most, as in the game: 5000, beside Mario as he slides.
+            if (finale == Finale.SLIDE) c.drawText("5000", pole + 18f, g - feet / unit - marioH / 2f, popup)
+        }
+        if (door in -30..bw + 30) drawCastle(c, door)
+        if (finale == Finale.DONE && fireworks > 0) drawFireworks(c, (animTime - fireworksAt) / 1000f)
+    }
+
+    private fun brickWall(c: Canvas, left: Int, top: Int, w: Int, h: Int) {
+        paint.color = S.PALETTE['Q']!!
+        c.drawRect(left.toFloat(), top.toFloat(), (left + w).toFloat(), (top + h).toFloat(), paint)
+        paint.color = Color.BLACK
+        var row = 0
+        var y = top
+        while (y < top + h) {
+            c.drawRect(left.toFloat(), y.toFloat(), (left + w).toFloat(), y + 1f, paint)
+            var x = left + if (row % 2 == 0) 0 else 4
+            while (x < left + w) {
+                if (x > left) c.drawRect(x.toFloat(), y.toFloat(), x + 1f, minOf(y + 4, top + h).toFloat(), paint)
+                x += 8
+            }
+            y += 4
+            row++
+        }
+    }
+
+    /** The castle with its door on [cx]: a wall, a narrower tower, battlements, two windows and the victory flag. */
+    private fun drawCastle(c: Canvas, cx: Int) {
+        val g = ground
+        brickWall(c, cx - 12, g - 44, 24, 18)
+        brickWall(c, cx - 24, g - 26, 48, 26)
+        paint.color = S.PALETTE['Q']!!
+        // Battlements: the wall's, except where the tower stands, then the tower's.
+        for (k in listOf(0, 1, 4, 5)) c.drawRect((cx - 24 + k * 8).toFloat(), g - 29f, (cx - 20 + k * 8).toFloat(), g - 26f, paint)
+        for (k in 0 until 3) c.drawRect((cx - 12 + k * 8).toFloat(), g - 47f, (cx - 8 + k * 8).toFloat(), g - 44f, paint)
+        paint.color = Color.BLACK
+        c.drawRect(cx - 6f, g - 40f, cx - 3f, g - 35f, paint)
+        c.drawRect(cx + 3f, g - 40f, cx + 6f, g - 35f, paint)
+        c.drawRect(cx - 5f, g - 14f, cx + 5f, g.toFloat(), paint) // the door
+        c.drawRect(cx - 4f, g - 16f, cx + 4f, g - 14f, paint)
+        if (castleFlag > 0f) {
+            val fy = (g - 48 - 8 * castleFlag).roundToInt()
+            paint.color = Color.WHITE
+            c.drawRect(cx.toFloat(), (g - 57).toFloat(), cx + 1f, (g - 47).toFloat(), paint)
+            for (r in 0 until 5) c.drawRect((cx - 5 + r / 2).toFloat(), (fy + r).toFloat(), cx.toFloat(), fy + r + 1f, paint)
+            paint.color = S.PALETTE['G']!!
+            c.drawRect(cx - 3f, fy + 1f, cx - 1f, fy + 3f, paint)
+        }
+    }
+
+    /** A burst every second, alternating sides, beyond the ? blocks so the time stays readable. */
+    private fun drawFireworks(c: Canvas, seconds: Float) {
+        val k = seconds.toInt()
+        if (k >= fireworks) return
+        val p = seconds - k
+        val side = if (k % 2 == 0) -1 else 1
+        val cx = bw / 2 + side * (block + block / 6 + 20 + (k * 7) % 11)
+        val cy = ground - 52 - (k * 5) % 14
+        val colors = intArrayOf(S.PALETTE['R']!!, Color.WHITE, S.PALETTE['O']!!, S.PALETTE['L']!!)
+        val color = colors[k % colors.size]
+        for (i in 0 until 16) {
+            val inner = i % 2 == 1 // a second, smaller ring between the spokes
+            val a = Math.toRadians(i * 22.5)
+            val r = (3 + 11 * p) * if (inner) 0.55f else 1f
+            paint.color = color
+            paint.alpha = (255 * (1 - p * p)).toInt()
+            val x = (cx + r * Math.cos(a)).roundToInt()
+            val y = (cy + r * Math.sin(a)).roundToInt()
+            val size = if (inner) 1f else 2f
+            c.drawRect(x.toFloat(), y.toFloat(), x + size, y + size, paint)
+        }
+    }
+
     /** Draws a pixel-art [grid] with its top-left at buffer pixel ([left], [top]), optionally mirrored, flipped or recoloured. */
     private fun drawGrid(c: Canvas, grid: Array<String>, left: Int, top: Int, mirror: Boolean,
-                         flipV: Boolean = false, swap: Map<Char, Int>? = null) {
+                         flipV: Boolean = false, swap: Map<Char, Int>? = null, alpha: Int = 255) {
         for ((row, line) in grid.withIndex()) {
             for ((col, ch) in line.withIndex()) {
                 paint.color = swap?.get(ch) ?: S.PALETTE[ch] ?: continue
+                if (alpha < 255) paint.alpha = alpha
                 val x = left + if (mirror) line.length - 1 - col else col
                 val y = top + if (flipV) grid.size - 1 - row else row
                 c.drawRect(x.toFloat(), y.toFloat(), x + 1f, y + 1f, paint)
@@ -886,19 +1277,39 @@ class MarioSceneView(context: Context) : View(context) {
         val HILL = Color.rgb(0x00, 0xA8, 0x00)
         val HILL_DARK = Color.rgb(0x00, 0x60, 0x00)
         val BUSH = Color.rgb(0x80, 0xD0, 0x10)
-        val BRICK = Color.rgb(0xC8, 0x4C, 0x0C)
-        val BRICK_LIGHT = Color.rgb(0xFC, 0x98, 0x38)
-        val BLOCK_GOLD = Color.rgb(0xF8, 0xB8, 0x00)
+        // The wiki's block colours (see the ? block, brick and hard block sprites), so the ground matches the obstacles.
+        val BRICK = Color.rgb(0x99, 0x4E, 0x00)
+        val BRICK_LIGHT = Color.rgb(0xFF, 0xCC, 0xC5)
+        val BLOCK_GOLD = Color.rgb(0xEA, 0x9E, 0x22)
         val BLOCK_LIGHT = Color.rgb(0xFC, 0xE0, 0xA8)
-        val BLOCK_DARK = Color.rgb(0x88, 0x40, 0x00)
+        val BLOCK_DARK = Color.rgb(0x99, 0x4E, 0x00)
 
         const val REVERT_MS = 5_000L // idle time after the last tap before the real time is punched back
         const val WALK_SPEED = 0.2f // dp per ms
-        const val GOOMBA_SPEED = 0.03f // dp per ms, Goombas and Koopas
+        const val RUN_FACTOR = 1.7f // holding B: Mario runs when the way is long
+        const val RUN_DISTANCE = 70f // Mario pixels
+        const val ACCEL = 9e-4f // dp per ms²: from rest to a walk in about 220 ms
+        const val FRICTION = 12e-4f // dp per ms²: coasting to a stop
+        const val SKID = 20e-4f // dp per ms²: braking against the direction he wants to go
+        const val GOOMBA_SPEED = 0.03f // dp per ms, Goombas, Koopas and Buzzy Beetles
+        const val HARD_SPEEDUP = 1.4f // second quest: certain enemies are faster
         const val SHELL_SPEED = 0.25f // dp per ms
         const val FIREBALL_SPEED = 0.12f // buffer pixels per ms
         const val GRAVITY = 2.6e-4f // Mario pixels per ms², scaled by the unit
-        const val JUMP_HEIGHT = 10f // Mario pixels
+        const val HOLD_GRAVITY = 0.5f // share of gravity left while "A" is held and Mario is still rising
+        const val STOMP_BOUNCE = 12f // Mario pixels, bouncing off an enemy
+        const val BONK = 0.02f // buffer pixels per ms: how hard a block knocks Mario back down
+        const val BUMP_MS = 260f // a punched block's hop
+        const val DEATH_FREEZE_MS = 400L
+        const val DEATH_HOP = 20f // Mario pixels
+        const val PLANT_SHY = 6f // Mario pixels from the pipe's edge inside which its plant stays down
+        const val PLANT_WAIT = 14f // Mario pixels short of a plant that is out, where he stops
+        const val STEP_PX = 6f // Mario pixels of ground per walk frame (the NES cycle), so a planted foot does not slide
+        const val JUMP_MS = 550f // the leap at the flagpole
+        const val SLIDE_MS = 1_100f
+        const val ENTER_MS = 350f
+        const val REACH = 7f // Mario pixels from his centre to the pole when he grabs it
+        const val CASTLE_GAP = 58f // Mario pixels from the pole to the castle door
         const val PLANT_CYCLE_MS = 4_000L
         const val CHANGE_MS = 800L // grow / shrink flicker
         const val POWER_MS = 3 * 60_000L // each power-up level lasts this long

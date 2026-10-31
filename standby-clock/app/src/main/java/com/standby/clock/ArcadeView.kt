@@ -33,10 +33,33 @@ import kotlin.math.sin
  * one per battery percent. The hero sits on the current level having collected the points behind it.
  * The corridor follows the display's rounded corners and bends round the camera punch-hole; the points are
  * spaced evenly along that real path, so the hero glides and turns smoothly instead of hopping.
- * Pac-Man theme: neon dots, the muncher and red ghosts at every 25%. Super Mario theme: a coin per 1%, a star
- * every 5% and a Goomba every 10% that Mario stomps flat; Mario uses the user's sprites if present.
+ * Pac-Man theme: neon dots, the muncher and red ghosts at every 25%. Super Mario theme: no frame, only the
+ * charging info in the top right corner (the scene itself is MarioSceneView).
  */
 class ArcadeView(context: Context) : View(context) {
+
+    /**
+     * The phone has stopped charging (full, or its own limit): the info reads COURSE CLEAR / LEVEL CLEAR instead of
+     * CHARGING, and the Pac-Man frame plays its ending: the muncher runs the rest of the maze eating every dot, the
+     * ghosts vanish and the maze flashes white and blue, as at the end of an arcade level.
+     */
+    var complete = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (!value) endStart = NOT_ENDING
+            else {
+                endFrom = if (shownLevel < 0) level.toFloat() else shownLevel
+                runMs = ((100f - endFrom) * RUN_MS_PER_PERCENT).coerceIn(RUN_MIN_MS, RUN_MAX_MS)
+                glide.cancel()
+                // Opened with charging already ended: show the finished maze at once.
+                endStart = if (isAttachedToWindow) time else -(runMs + FLASH_MS).toLong() - 1
+            }
+            invalidate()
+        }
+    private var endStart = NOT_ENDING // ticker time the ending began; NOT_ENDING while charging
+    private var endFrom = 0f
+    private var runMs = 0f
 
     var theme = Theme.PACMAN
         set(value) { field = value; applyTheme(); invalidate() }
@@ -49,7 +72,11 @@ class ArcadeView(context: Context) : View(context) {
     private var time = 0L
     private var lastFrame = 0L
 
-    private val wall = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5 * dp }
+    private val wall = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 5 * dp
+        color = Color.rgb(0x2B, 0x3B, 0xFF)
+    }
     private val dotCore = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(0xFF, 0xF1, 0xE8) }
     private val dotGlow = Paint(Paint.ANTI_ALIAS_FLAG)
     private val glowSmall = glow(9 * dp)
@@ -251,10 +278,20 @@ class ArcadeView(context: Context) : View(context) {
             drawInfo(canvas)
             return
         }
+        // The ending: run out the maze, then flash it (white and blue, four times) once the last dot is eaten.
+        val ending = endStart != NOT_ENDING
+        val sinceEnd = if (ending) (time - endStart).toFloat() else 0f
+        val cleared = ending && sinceEnd >= runMs
+        val flashing = cleared && sinceEnd - runMs < FLASH_MS
+        wall.color = if (flashing && ((sinceEnd - runMs) / FLASH_STEP_MS).toInt() % 2 == 0) Color.WHITE else MAZE_BLUE
         canvas.drawPath(outerWall, wall)
         canvas.drawRoundRect(innerRect, 28 * dp, 28 * dp, wall)
 
-        val heroAt = if (shownLevel >= 100f) 0f else shownLevel.coerceAtLeast(0f)
+        val heroAt = when {
+            ending -> endFrom + (100f - endFrom) * (sinceEnd / runMs).coerceIn(0f, 1f)
+            shownLevel >= 100f -> 0f
+            else -> shownLevel.coerceAtLeast(0f)
+        }
         val pulse = wave(900) * 0.65f + 0.35f
         for (i in 0 until 100) {
             if (abs(i - heroAt) < 0.5f) continue
@@ -262,7 +299,7 @@ class ArcadeView(context: Context) : View(context) {
             val collected = i < heroAt
             val next = !collected && i - heroAt < 1.5f
             if (theme == Theme.MARIO) drawMarioItem(canvas, i, collected, heroAt, if (next) pulse else 1f)
-            else if ((i + 1) % 25 == 0) drawGhost(canvas, pos[0], pos[1], 22 * dp, collected)
+            else if ((i + 1) % 25 == 0) { if (!cleared) drawGhost(canvas, pos[0], pos[1], 22 * dp, collected) }
             else drawNeonDot(canvas, pos[0], pos[1], (i + 1) % 5 == 0, if (collected) 0.1f else if (next) pulse else 1f)
         }
 
@@ -420,14 +457,18 @@ class ArcadeView(context: Context) : View(context) {
         label.color = accent
         label.textSize = 6 * dp * scale
         y += label.textSize
-        canvas.drawText("CHARGING", right, y, label)
-        val size = (12 * dp * scale).toInt()
-        val left = (right - label.measureText("CHARGING") - 2 * dp - size).toInt()
-        val top = (y - label.textSize / 2 - size / 2).toInt()
-        bolt.setBounds(left, top, left + size, top + size)
-        bolt.setTint(accent)
-        bolt.alpha = (255 * (0.55f + 0.45f * wave(1400))).toInt()
-        bolt.draw(canvas)
+        val ended = complete
+        val title = if (!ended) "CHARGING" else if (mario) "COURSE CLEAR!" else "LEVEL CLEAR!"
+        canvas.drawText(title, right, y, label)
+        if (!ended) {
+            val size = (12 * dp * scale).toInt()
+            val left = (right - label.measureText(title) - 2 * dp - size).toInt()
+            val top = (y - label.textSize / 2 - size / 2).toInt()
+            bolt.setBounds(left, top, left + size, top + size)
+            bolt.setTint(accent)
+            bolt.alpha = (255 * (0.55f + 0.45f * wave(1400))).toInt()
+            bolt.draw(canvas)
+        }
 
         label.color = if (mario) ink else Color.WHITE
         label.textSize = 14 * dp * scale
@@ -437,11 +478,18 @@ class ArcadeView(context: Context) : View(context) {
         label.color = if (mario) ink else Color.rgb(0x8F, 0x98, 0xFF)
         label.textSize = 5 * dp * scale
         y += 5 * dp + label.textSize
-        canvas.drawText(etaText, right, y, label)
+        canvas.drawText(if (ended) "CHARGING ENDED" else etaText, right, y, label)
     }
 
     private companion object {
         const val FRAME_MS = 33L
+        const val NOT_ENDING = Long.MIN_VALUE
+        const val RUN_MS_PER_PERCENT = 45f // the muncher's speed while it clears the rest of the maze
+        const val RUN_MIN_MS = 600f
+        const val RUN_MAX_MS = 3_500f
+        const val FLASH_STEP_MS = 250f
+        const val FLASH_MS = 8 * FLASH_STEP_MS
+        val MAZE_BLUE = Color.rgb(0x2B, 0x3B, 0xFF)
         val ACCENT = Color.rgb(0xFF, 0xD4, 0x00)
         val GHOST_RED = Color.rgb(0xE1, 0x4D, 0x2A)
         val GHOST_YELLOW = Color.rgb(0xFD, 0xD0, 0x20)
