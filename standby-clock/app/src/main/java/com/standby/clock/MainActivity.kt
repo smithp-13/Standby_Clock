@@ -3,6 +3,7 @@ package com.standby.clock
 import android.Manifest
 import android.app.Activity
 import android.app.NotificationManager
+import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -148,6 +149,7 @@ class MainActivity : Activity() {
                 insets
             }
         })
+        BindWatchdog.schedule(this)
     }
 
     // RECEIVER_NOT_EXPORTED is a plain flag that Android ignores before API 33, so it is passed on every version.

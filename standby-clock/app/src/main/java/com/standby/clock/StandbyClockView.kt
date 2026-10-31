@@ -12,6 +12,7 @@ import android.graphics.Rect
 import android.text.format.DateFormat
 import android.view.View
 import android.view.animation.DecelerateInterpolator
+import android.os.Build
 import java.util.Calendar
 
 /** iOS StandBy "big numerals" style: heavy rounded digits that overlap, with a two-dot colon. */
@@ -32,6 +33,8 @@ class StandbyClockView(context: Context) : View(context) {
     /** Text size as a fraction of the view height, before shrinking to fit the width. */
     var heightFactor = 0.9f
         set(value) { field = value; invalidate() }
+
+    private fun withAlpha(color: Int, alpha: Int) = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
 
     // Digits on screen ("1535") and the ones they are rolling away from when the minute changes.
     private var shown = ""
