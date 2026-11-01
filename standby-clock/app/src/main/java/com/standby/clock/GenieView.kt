@@ -1,5 +1,7 @@
 package com.standby.clock
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
@@ -8,7 +10,6 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.view.View
 import android.view.animation.AccelerateDecelerateInterpolator
-import androidx.core.animation.doOnEnd
 
 /**
  * macOS-style genie: a snapshot of a view is warped with a bitmap mesh and poured into a target rect.
@@ -35,12 +36,14 @@ class GenieView(context: Context) : View(context) {
             duration = 420
             interpolator = AccelerateDecelerateInterpolator()
             addUpdateListener { progress = it.animatedValue as Float; invalidate() }
-            doOnEnd {
-                bitmap = null
-                snapshot.recycle()
-                invalidate()
-                done()
-            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    bitmap = null
+                    snapshot.recycle()
+                    invalidate()
+                    done()
+                }
+            })
         }.start()
     }
 

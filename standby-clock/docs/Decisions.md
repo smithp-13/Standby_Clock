@@ -1,5 +1,11 @@
 # Decisions
 
+## Prototype scaffold: plain Views, no Compose, versions unverified
+- **Date:** 2026-10-29  **Branch:** none (not a git repository)
+- **Decision:** `standby-clock/` starts as a plain-Views Kotlin app (AGP 8.13.0, Gradle 8.13, Kotlin 2.1.21, compileSdk/targetSdk 36, minSdk 28, package `com.standby.clock`). It contains a capability report and a foreground service that logs wake-up sensor events (PRD US-001, feasibility gate 2).
+- **Why:** The first goal is to prove sensor delivery while unplugged and asleep. Compose adds plugin and version coupling that does not help that test. Gradle and AGP versions were not verifiable here (no Gradle on the machine, web search inconclusive); they may need bumping on first sync. Only SDK platform `android-37.0` was found installed, so Studio may need to download platform 36.
+- **Rejected:** Compose now (deferred until the clock UI); hand-writing the Gradle wrapper jar (binary, Studio regenerates it from the properties file).
+
 ## Use raw AOSP values for hidden sensor types
 - **Date:** 2026-10-29  **Branch:** none (not a git repository)
 - **Decision:** `SensorService.TARGETS` uses `22` (tilt detector) and `27` (device orientation) instead of `Sensor.TYPE_TILT_DETECTOR` / `Sensor.TYPE_DEVICE_ORIENTATION`.
@@ -274,3 +280,327 @@
   - the arcade's CHARGING / % / EATEN text shrinks to 6 / 14 / 5 dp (from 8 / 22 / 6.5), tucked 64 dp from the top and right.
   The simple (battery) layout is unchanged.
 - **Why:** The user asked for the date on the left and smaller, smaller icons and smaller battery info, so the clock can be bigger.
+
+## Keep the listener bound: real rebind on Start, plus a watchdog job
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:**
+  - `BindWatchdog.ensureBound()` runs on Start and from a periodic `JobScheduler` job (15 min, persisted across reboot, `RECEIVE_BOOT_COMPLETED`). If access is granted, the listener is not running and the user has not pressed Stop, it calls `requestRebind` and toggles our own `SensorService` component disabled and back to enabled, which makes NotificationManager re-scan and bind it.
+  - Stop sets a persisted `stopped_by_user` flag that the watchdog respects.
+- **Why:** The user reported the app closing in the background after Start. Logs from the SM-M346B:
+  - the event log stops at 19:31:55 on 10-29 with no `service stopped`;
+  - on 10-30 NotificationManager listed the listener as allowed but neither live nor snoozed;
+  - pressing Start at 09:54 did not bind it (`requestRebind` only undoes `requestUnbind`);
+  - with only `MainActivity` in the process, `lmkd` reclaimed it at `oom_score_adj 700` at 09:55:00 ("min watermark is breached and swap is low").
+  A bound listener runs at adj 200–250, which protects it.
+- **Verified on the API 37 emulator:**
+  - Bound and backgrounded, the app sits at adj 200; after Stop then Start, adj 250.
+  - A `kill -9` was re-bound by stock Android in about 5 s; Samsung did not do this overnight.
+  - With the listener allowed but unbound and the flag cleared, a forced watchdog run re-bound it (`live` 0 → 1, `rebind requested (watchdog)`).
+  - With the flag set, the watchdog left it alone.
+- **Rejected:** `pm disable/enable` from adb (shell may not change another app's component state). Relying on NotificationManager's own rebind (did not happen on the M34).
+
+## Lock a charging phone immediately when it times out sideways (device admin)
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:** This reverses the earlier rejection of device-admin `lockNow()` in "Faster, cleaner standby launch".
+  - A `LockAdmin` device admin with only the `force-lock` policy is added to the Start sequence, after the full-screen-intent step.
+  - On `SCREEN_OFF` while sideways and charging, if the keyguard is not yet locked and the admin is active, `SensorService` calls `lockNow()` and logs `locked for standby`. The existing 250 ms lock poll then shows the clock right away instead of after the 5 s auto-lock delay.
+- **Why:** The user asked that a charging phone left idle (screen timeout) shows the clock and locks, with or without the auto-lock delay. Only a device admin can lock the device.
+- **Tradeoffs:**
+  - The app must be deactivated as device admin (Settings → Security → Device admin apps) before it can be uninstalled.
+  - `lockNow()` also ends Smart Lock / Extend Unlock for that session, so the next unlock needs fingerprint or PIN.
+- **Not yet verified:** the emulator has no wake-up device-orientation sensor (type 27), so the sideways trigger cannot fire there. The phone disconnected from adb during this work.
+
+## Genie dismissal, outer wall closer to the edge, bigger date, padded charging info
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:**
+  - **Genie:** a swiped card is snapshotted and drawn by `GenieView` with `Canvas.drawBitmapMesh` (12×24 mesh, 420 ms). Rows nearest the icon row move first and narrow to the target icon's width, so the card funnels into its app icon. The icon then pops (1.35×) and the app's notifications are cleared. Without a matching icon it falls back to the sideways fly-off.
+  - **Walls:** the outer wall is inset 6 dp (was 14) with a 30 dp corner radius to follow the display corners.
+  - **Date:** 16 sp while charging (was 13) and 22 sp on battery (was 20).
+  - **Charging info:** starts 72 dp from the top and 76 dp from the right (was 64/66), for more padding inside the inner wall.
+- **Why:** User requests.
+- **Not yet verified on the device:** the phone disconnected; it compiles and lints with 0 errors.
+
+## The screen saver starting counts as a timeout
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:** `SensorService` treats `ACTION_DREAMING_STARTED` like `SCREEN_OFF`. While sideways and charging it locks via the admin if needed, then polls for the lock and shows the clock.
+- **Why:** On the SM-M346B a charging phone that times out starts the screen saver (`DreamActivity` from `com.android.dreams.phototable`, wakefulness `Dreaming`) instead of turning the screen off. No `SCREEN_OFF` is sent, so standby never started after an auto-lock while charging, which is the user's "once auto lock then it is not visible".
+- **Verified:** after the clock was closed on the charging, locked phone, the phone started its screen saver at 10:25:32.532 and the clock was requested 0.29 s later and took focus.
+- **Not yet verified:** the unlocked → timeout → `lockNow()` path. The phone stayed locked during the test window, and the screen saver could not be started from adb ("Must be root to call Dream shell commands").
+
+## Start stays enabled until setup is complete
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:** The main screen shows standby as running only when the listener is bound and the device admin is active. Otherwise Start stays tappable.
+- **Why:** After the update the listener was already bound, so Start was disabled and the new device-admin step was unreachable. Verified: Start was enabled on the M34, and tapping it opened Samsung's device-admin screen, which the user activated.
+
+## Do Not Disturb while the lock-screen clock shows
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:**
+  - `ClockActivity.onStart` (not previews) calls `SensorService.setStandbyQuiet(true)`. If the filter is ALL, that calls `requestInterruptionFilter(INTERRUPTION_FILTER_PRIORITY)` and persists the previous filter. `onStop` restores it.
+  - On every listener connect, any filter left by a process that died mid-standby is restored.
+  - A DND the user set themselves is never touched.
+- **Why:** The user wants new notifications on the clock as icons only, not system banners over it, and chose DND over leaving banners alone. Priority mode keeps the user's own DND exceptions (alarms, starred callers).
+- **Verified on the M34:** `zen_mode` 1 while the clock shows and 0 after it hides (scenario script). After a `kill -9` mid-standby, the next connect logged `standby quiet off` before re-applying.
+- **Not verified:** whether every app's banner is hidden; that depends on Samsung's DND visual-effect settings.
+- **Tradeoff:** if the listener is dead, DND stays on until it reconnects.
+
+## Samsung never re-binds a dead listener; the user restarts it from a prompt
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:**
+  - `BindWatchdog` runs every 15 min from JobScheduler and every minute from a non-waking inexact alarm (re-armed on boot and on every connect).
+  - It disables our component, waits 1.5 s, re-enables it, and if the listener still isn't running posts "Standby Clock stopped". That notification opens the app's notification-access page so the user can switch it off and on. It is cancelled on connect.
+  - Start opens the same page if the listener hasn't connected 3.5 s after the attempt.
+- **Why:** Measured on the M34, after a `kill -9` of the bound listener:
+  - NotificationManager logs `connection lost` → `Removing active service` and never re-binds (stock Android re-binds in about 5 s, per the emulator).
+  - `requestRebind` does nothing.
+  - The quick component toggle collapses into one change.
+  - With a 1.5 s gap the disable pass throws inside `rebindServices` (`could not be unbound`), and the enable pass binds nothing. Earlier logs showed `Not registering … is already binding`: One UI keeps a stale binding entry.
+  - Battery-exempting the app (`deviceidle whitelist`) did not change this.
+  - Only switching notification access off and on rebound it (`cmd notification disallow/allow_listener`). Apps may not do that themselves.
+- **Verified on the M34:**
+  - Kill → watchdog → prompt posted (id 3).
+  - Access off/on → listener live, prompt cleared, DND restored, clock back.
+  - The 1-minute alarm started the app at 10:46:59.
+- **Note:** during testing the app was added to the battery-optimization whitelist on the M34 (equivalent to Settings → Apps → Standby Clock → Battery → Unrestricted). Left in place.
+
+## Full-screen intent is always posted fresh
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:** `showClock()` cancels notification 2 before posting it.
+- **Why:** A full-screen intent fires only on a new post. A leftover launch notification, from a process that died before the clock cancelled it, turned every later request into an update, so the clock never opened (10:38:06, :10, :18 on the M34).
+
+## Pac-Man tweaks: muncher on its coin, neon dots, notch-aware wall, info further right
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:**
+  - The 6 dp forward lean is removed; the muncher sits on its coin (the user chose "back onto the coin").
+  - Dots get a radial-gradient halo (9 dp, 16 dp for big ones) under a bright core.
+  - `ClockActivity` lays out into the display cutout (`LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS`). `ArcadeView` subtracts a rounded rect (cutout + 3 dp) from the outer wall path with `Path.op(DIFFERENCE)`, so the wall bends round the camera punch-hole on whichever edge it is.
+  - The CHARGING info's right edge moves from 76 to 66 dp from the screen edge, so it clears the digits; the clock is unchanged.
+- **Why:** User requests. Verified on the M34 screenshot: the wall bends round the left-edge camera.
+
+## Notification card hides after 3 seconds
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:** An opened card hides itself after 3 s. Touching it pauses the timer; a swipe that springs back restarts it.
+- **Why:** User request. Verified on the M34: Meesho's card was visible at 1 s and gone at 4.5 s.
+
+## Super Mario theme, selectable next to Pac-Man
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:** A main-screen Theme button cycles Pac-Man / Super Mario (stored in prefs, read when the clock starts). The Mario theme draws:
+  - brick-block digits on a 3×5 grid with coin-block colon; a changed digit bumps up like a hit block and pops a coin;
+  - brick-coloured walls with black mortar dashes;
+  - 100 spinning gold coins, faded once collected;
+  - ? blocks at 25/50/75/100 that become dim "used" blocks once passed;
+  - "COINS n / 100" in the info text;
+  - a white Press Start 2P date.
+  The runner uses the user's sprite images `res/drawable-nodpi/mario_run_1.png` and `mario_run_2.png`, looked up by name so the app builds without them. Until they exist, a red/peach/blue placeholder block is drawn.
+- **Why:** The user asked for a Super Mario theme and a Mario-style clock, and chose to supply exact sprites they have rights to.
+  - Research: Nintendo's Game & Watch brick-digit clock and the DSi Mario Clock (auto-runner collecting coins over the digits) informed the brick digits and the coin loop.
+  - The black, underground-style background keeps it OLED- and night-friendly.
+- **Verified on the M34:** the user switched to Super Mario. Preview and the lock-screen clock show brick digits, coin colon, brick walls bending round the notch, spinning coins, ? and used blocks, and the placeholder runner. The first build's brick digits (94% of the width) covered "COINS 64 / 100"; they are now limited to 78% of the width, and the screenshot shows the info clear.
+
+## Mario pixel sprites and jump animation with raised hand
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:**
+  - Extracted the user-supplied 8-bit Mario character into `res/drawable-nodpi/`:
+    - `mario_stand.png`: standing sprite from the user's image with the white background removed (transparent).
+    - `mario_jump.png`: jumping sprite matching the character's exact palette, with the right fist raised high on top punching up as in the original NES Super Mario Bros.
+    - `mario_run_1.png` and `mario_run_2.png`: running animation cycle matching the palette for the arcade track.
+  - `MarioSceneView`:
+    - Mario is **always walking** on the ground, cycling `mario_run_1` and `mario_run_2` via a continuous ~30 fps `TimeAnimator` loop.
+    - **Sequential punch animation**:
+      - When only the minute changes: Mario walks directly under the minute block, leaps up with one hand on top (`mario_jump`), punches and bumps only the minute block, updates `shownMinutes`, lands, and walks back to center. The hour block remains stationary.
+      - When the hour changes: Mario walks under the hour block, jumps and punches it (only hour block bumps, updates `shownHours`), lands, walks across under the minute block, jumps and punches it (only minute block bumps, updates `shownMinutes`), lands, and returns to center.
+    - Interactive touch: tapping the left half punches the hour block; tapping the right half punches the minute block.
+  - `ClockActivity` layout:
+    - Moved `mario` directly into `root` as a full-screen `match_parent` view rather than inside the inset `content` container. The sky and ground extend edge-to-edge behind the arcade frame, eliminating black margins.
+- **Verified on the SM-M346B:**
+  - Build succeeds with 0 errors and 0 lint issues (`:app:assembleDebug`).
+  - Installed and verified live on device:
+    - Tapping the right half captured Mario leaping and punching specifically under the minute block (`minute_punch_crop.png`).
+    - Tapping the left half captured Mario leaping and punching specifically under the hour block (`hour_punch_crop.png`).
+    - The background and brick ground extend fully edge-to-edge behind the outer arcade wall.
+
+## Mario Parallax Moving Background, Sequential Block Punching & Clean Charging Stats
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:**
+  - **Continuous 2D Parallax Background (`MarioSceneView`):**
+    - Moving layers horizontally while Mario walks:
+      - Drifting clouds across the sky (0.15x walking speed + constant time drift).
+      - Distant green hills with rounded tops and shadows (0.35x speed).
+      - Foreground green bushes (0.65x speed).
+      - Seamless ground bricks (1.0x walking speed with positive modulo wrapping to eliminate seams or jump cuts).
+    - Mario walks continuously at ~30 fps cycling `mario_run_1` and `mario_run_2`.
+    - Scrolling is driven by `worldDistance` which only advances while Mario is on the ground (`!inAir`).
+  - **Sequential Block Punching on Time Change:**
+    - When *only* minute changes: Mario walks directly under the minute block, leaps up (`mario_jump`), punches it at apex (only minute block bumps and updates digit), lands, and returns to center.
+    - When *both* hour and minute change: Mario walks under the hour block, jumps and punches it (only hour block bumps and updates digit), lands, walks across under the minute block, jumps and punches it (only minute block bumps and updates digit), lands, and returns to center.
+    - Added test broadcasts `com.standby.clock.TEST_MARIO_HOUR`, `com.standby.clock.TEST_MARIO_MINUTE`, `com.standby.clock.TEST_MARIO_BOTH` and touch interaction (tap left = test hour punch, tap right = test minute punch).
+  - **Clean Top-Right Charging Information:**
+    - For `Theme.MARIO` in `ArcadeView`, removed track runner, inner wall, and 100 extra collection coins/Goombas.
+    - Only the edge-to-edge outer brick wall and clean top-right battery status (lightning bolt, "CHARGING", level percentage e.g. "41%", and ETA e.g. "until 95%") are drawn directly without any clutter.
+  - **Lifecycle Fix:**
+    - Used `onVisibilityAggregated(isVisible)` instead of `onVisibilityChanged`, preventing `runAnim` from being paused by sibling visibility changes.
+    - Exported `ClockActivity` in `AndroidManifest.xml` for seamless testing and preview.
+- **Verified on the SM-M346B:**
+  - Build succeeds with 0 errors and 0 warnings (`:app:assembleDebug`).
+  - Verified active motion via frame comparison: 199,205 pixel differences across full screen per 0.4s.
+  - Verified sequential block punch: Mario leaps into air (96 frames of `inAir=true`), punches hour, lands, walks to minute, punches minute, lands, and walks back to center.
+  - Verified top-right charging info renders cleanly framed by edge-to-edge brick borders.
+
+## Mario: no border, dark grey text in the top corners, icons on the bricks
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:**
+  - The Mario theme draws no outer brick wall (and no mortar). The content inset of 64 dp is Pac-Man only.
+  - Date in the top left corner (24 dp / 20 dp), charging info in the top right corner (24 dp / 20 dp), both in `Theme.marioInk`: Material You `system_neutral1_800`, `#303030` before Android 12. The ? block digits use the same ink with a light cream shadow.
+  - The charging bolt is the Material Symbols `bolt` vector (`res/drawable/ic_bolt.xml`) for both themes, replacing the hand-drawn path.
+  - Notification icons for Mario are 20 dp and centred on the first row of ground bricks (`MarioSceneView.brickRowCenter()`); the card sits just above them.
+- **Why:** The white date and charging text vanished over the white clouds. The user asked for no border, for the info in both top corners, and for the icons on the first brick row.
+- **Rejected:** Keeping white text with an outline: the user asked for dark grey.
+
+## Notification icons missing: the listener was unbound, not a layout bug
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:** No code change. Rebound with `adb shell cmd notification disallow_listener` / `allow_listener com.standby.clock/com.standby.clock.SensorService`.
+- **Why:** `dumpsys notification` showed `SensorService` missing from "Live notification listeners" and the "Standby Clock stopped" prompt posted. Each reinstall kills the listener and One UI does not rebind it (see "Samsung never re-binds a dead listener"), so `clockNotifications()` returned nothing. After rebinding, 14 app icons show on the bricks.
+
+## Mario drawn as pixel grids on a low-resolution buffer, with a 3-frame walk
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:**
+  - The whole Mario scene is drawn into a bitmap with one pixel per Mario pixel (`unit = height × 0.22 / 16`), without anti-aliasing, and scaled up unfiltered. Clouds, hills, bushes, bricks, blocks and sprites share one pixel grid. The digits are drawn afterwards at full resolution (Press Start 2P is pixel art already).
+  - Mario is drawn from 16×16 character grids in code instead of `mario_run_1.png` / `mario_run_2.png`. The palette, head, standing body and jump pose are sampled from the user's own PNGs, so the look is unchanged.
+  - Walk cycle: 3 frames played 1-2-3-2, advanced every 4 Mario pixels of distance covered (world scroll plus on-screen walking), so feet match the ground.
+  - Small obstacles (12 px wide, shorter than Mario): pipes 10 px tall that Mario jumps over or lands on, and Goombas he hops onto and flattens. They spawn just off the right edge every 0.5–1 screen widths, randomly a pipe or a Goomba. Simple gravity drives the jumps.
+  - The world scrolls only while Mario walks in place. During a block punch it holds still and he walks on screen (previously it kept scrolling).
+- **Why:**
+  - The walk looked like a glitch. Sampling the PNGs showed why: `mario_run_1` is the standing pose with both hands out, and `mario_run_2` tucks the hands away and sits one pixel row lower, so the hands vanished and the head bobbed on every switch.
+  - Research: SMB1's walk is a 3-frame loop whose rate follows Mario's speed ([UCLA Games](https://games.ucla.edu/?p=985), [gamedev.net](https://www.gamedev.net/forums/topic/642655-understanding-2d-walkingrun-animation-in-games/?page=0)). The 1-2-1-3 ordering suggested on [nesdev](https://nesdev.nes.science/f21/t6930.xhtml) led to the ping-pong order.
+  - A shared low-resolution buffer is the only way to make the circles and arcs of the background look like real pixels without redrawing every shape by hand.
+- **Reverses:** "Super Mario theme, selectable next to Pac-Man" and "Mario pixel sprites and jump animation with raised hand", which drew the runner from the user's PNGs. The PNGs stay in `res/drawable-nodpi/`; `MarioSceneView` no longer loads them.
+- **Rejected:** Re-editing the PNGs. Two frames cannot give a smooth cycle, and bitmaps scaled to an arbitrary height do not sit on the scene's pixel grid.
+- **Verified on the SM-M346B:** a 12-shot burst shows Mario clearing a pipe, a Goomba flattened with Mario bouncing off it, walk frames with the same head and both hands every frame, and the minute block changing 15 → 16.
+
+## Tapping a ? block counts it up; after 5 s idle Mario punches the real time back
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:**
+  - Each tap on the hour or minute block (hit-tested, no longer "left half / right half") queues one punch that adds 1. Hours wrap 23→00, or 12→1 in 12-hour time; minutes wrap 59→00. Taps made while Mario is busy are queued, not dropped.
+  - 5 s after the last tap, Mario punches both blocks back to the real time, hour first, one step per punch, the shortest way round. Usually that means counting down (the user's choice over counting up through the wrap or jumping straight back).
+  - Minute ticks reuse the same queue. While a revert is pending the tick is skipped, and the revert targets the time at that moment. If a tick lands mid-sequence, the time is punched in before Mario walks back to centre.
+  - A cancelled walk or jump no longer runs its completion, so a new punch takes over from where Mario stands instead of snapping him to the centre.
+- **Why:** The old test tap always set "now + 1", so repeated taps did not count up, and the value it left stayed wrong until the next minute tick (the screen showed 16:19 at 15:19).
+
+## Taps on the ? blocks never count as the closing double tap
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:** `ClockActivity.dispatchTouchEvent` skips the double-tap detector for touches inside a Mario block (`MarioSceneView.blockAt`). A double tap anywhere else still closes the clock, as before.
+- **Why:** The user reported the lock-screen clock closing to a black screen while they tapped it. Punching a block quickly was a double tap, so the clock closed. Then it came back after 5 s, starting black and portrait until it rotates sideways (by design, see "No portrait flash on launch"). The user chose this over removing double-tap dismissal.
+- **Not reproduced:** a black screen that stays. On the SM-M346B, both charging and on battery, the clock came back 5 s after a double tap. The black portrait start lasted under a second.
+
+## Mario scaled down, smaller obstacles, jumps capped below the ? blocks
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:** One Mario pixel is now `height × 0.18 / 16` (was 0.22). Pipes are 10×6 and Goombas 10×8 Mario pixels (were 12×10). Every jump is 10 px, capped so Mario's head stays one pixel below the blocks, counting from where his feet are (on a pipe, after a stomp). This amends "Mario drawn as pixel grids on a low-resolution buffer".
+- **Why:** At the old scale there were only 22 pixel rows between the ground and the blocks. Mario (16) jumping a 10-row pipe put his head into the minute block (seen on device). At 0.18 there are 27 rows, so a 10 px jump clears 6 px pipes and lands on 8 px Goombas.
+- **Rejected:** Drawing Mario behind the blocks: it looks like he goes through them. Bumping the block on contact: a pipe under the blocks could then not be cleared at all.
+- **Verified on the SM-M346B:** a 16-shot burst shows pipe jumps and stomps with Mario's head always below the blocks. On the locked clock, 4 quick taps took the minutes 23 → 27 without closing the clock, and 5 s later Mario punched them back down to the real time.
+
+## Power-ups, every sprite from the user's reference sheet, bigger charging info
+- **Date:** 2026-10-30  **Branch:** none (not a git repository)
+- **Decision:**
+  - **Power-ups:**
+    - Mario starts small. When a punch lands, and no item is out, the block pops one item, chosen by Mario's state: small → mushroom (Super Mario, 16×32); Super → fire flower (Fire Mario, white overalls); Fire → star (8 s invincible, palette cycling) or 1-Up ("1UP" rises).
+    - The item rises out of the block, hops off its outer side, lands, and slides towards Mario (the star bounces).
+    - Growing or shrinking flickers between the two sizes for 0.8 s.
+    - Each level wears off after 3 minutes (Fire → Super → small), and a hit drops Mario straight to small with 2 s of flashing.
+  - **Course:** each spawn is random by weight: Goomba 3, Koopa 2, pipe 2, pipe with Piranha Plant 2, and 1 each for the spike trap and the hard, brick, ice, note and donut blocks.
+    - Mario stomps Goombas flat. A stomped Koopa leaves its shell, which slides away.
+    - Mario stops in front of a Piranha Plant that is up and goes once it ducks.
+    - Spike traps are always jumped and hurt on contact.
+    - Hard, brick and ice blocks and pipes are platforms. A note block springs Mario up. A donut block shakes and drops 0.5 s after he stands on it.
+    - Fire Mario throws bouncing fireballs at enemies or plants up to 60 px ahead (at most 2, 0.7 s apart).
+    - The star ploughs through enemies and plants.
+    - Enemies walking into Mario on the ground hurt him.
+  - **Sky:** a smiling cloud drifts across.
+  - **Layout:** one Mario pixel is now `height × 0.14 / 16`, and the ? blocks sit higher (6% / 5% from the top, was 16% / 12%). Super Mario (32 px) then has 13 px of jump room under the blocks while charging. Every jump stays capped below the blocks for the current size.
+  - **Charging info:** the Mario theme's charging info (text and bolt) is 1.4× larger. It has the corner to itself now that there is no wall.
+  - **Code layout:** all sprites live in `MarioSprites.kt`.
+- **Why:** The user asked for Mario to start small and grow with power-ups, for every sprite on their reference sheet to be used where it fits, and for bigger charging details.
+- **Sprites drawn, not cut out:** the user asked to remove the background from their reference image and use it. That image is a Dreamstime stock preview: watermarked, with drop shadows baked in, and with no usage license. So every sprite was redrawn by hand as its own pixel grid in the same style. A licensed copy could be cut out and swapped in later.
+- **Rejected:** Mario growing when the charger is plugged in, and notification icons growing. The user chose game power-ups.
+- **Verified:**
+  - `:app:assembleDebug` builds with no warnings. A contact sheet rendered from the grids shows every sprite.
+  - **Not yet verified on the phone:** it dropped off adb before install.
+
+## Mario theme integration fixes
+- **Date:** 2026-10-31  **Branch:** feature/smb_theme
+- **Decision:**
+  - `MarioSceneView` starts its frame loop only from `onVisibilityAggregated`, not from `onAttachedToWindow`.
+  - `MarioSceneView` takes a touch only when it goes down on a ? block. Touches anywhere else fall through to the clock behind, so tapping the scene hides the notification card as in the Pac-Man theme.
+  - The `TEST_MARIO_*` broadcasts are registered only in debuggable builds. Release builds register the time receiver as not exported.
+  - Removed the unreachable Mario track code from `ArcadeView` (coins, stars, Goombas, the PNG runner) and the unused `MarioSceneView.previewMode`. The `mario_*.png` files moved from `res/drawable-nodpi` to `docs/sprites`, since nothing loads them any more.
+  - `MainActivity` keeps passing `RECEIVER_NOT_EXPORTED` on every API level (the flag is ignored before 33), with lint's `InlinedApi` suppressed. Splitting the call by version made lint report the pre-33 branch as an error.
+- **Why:**
+  - Android only calls `onVisibilityAggregated` at attach for a view that is shown. With the Pac-Man theme the hidden Mario view started its loop on attach and never got the call to stop it, so it requested a frame every vsync until the first screen-off.
+  - The full-screen Mario view was clickable and consumed every touch, so the root's tap-to-hide-card never fired; the card only left after its 3 s timeout.
+  - An exported receiver for the test actions let any installed app change the displayed time.
+- **Verified:** `:app:assembleDebug` and `:app:lintDebug`. Not yet verified on the phone.
+
+## Super Mario grows whole, a mean Goomba, the real Super Mushroom, arcade colours for Pac-Man, a new main screen
+- **Date:** 2026-10-31  **Branch:** feature/smb_theme
+- **Decision:**
+  - **Super Mario:** redrawn as the whole character at 16×32: a 10-row head (wider, 1-pixel eye, moustache), a 14-row torso and 8-row legs. It replaces small Mario's 7-row head on 11 rows of legs. Stand, stride, pass and fist-up jump frames.
+  - **Goomba:** 12×12 with a mushroom-cap head, angry dark-brown brows (`M`), glaring eyes and two fangs; the feet are uneven so the 200 ms mirroring still walks it. The flattened Goomba matches.
+  - **Super Mushroom:** 12×12, outlined red cap with big white spots over a white stem with eyes (the 1-Up still swaps red for green).
+  - **Pac-Man clock face:** the digits are the arcade yellow and a paler yellow, the colon dots are the maze's cream pellets, and the date is the lilac of the "95% IN" line. They no longer follow the wallpaper (Material You), which made them pastel blue next to the yellow and blue maze. Ghosts stay solid red (user request, 2026-10-29).
+  - **Main screen:** status card (Running / Setup needed / Stopped) with one action button; setup as a numbered vertical stepper where only the first missing step is active and has its own button; theme picker cards with drawn previews; Preview; Share/Clear log. It pads itself clear of the system bars (Android 15+ draws edge to edge).
+  - `.gitignore` is GitHub's Kotlin and Android templates plus the project entries, replacing the Python template.
+- **Why:** User requests: Super Mario only had longer legs, the Goomba and mushroom did not look like the real ones, the Pac-Man theme needed reviewing, and the main screen looked unfinished.
+- **Sprites drawn, not copied:** proportions follow the NES game (Super Mario's head and body both grow), but every grid is drawn by hand, as for the earlier sprites.
+- **Verified on the SM-M346B:** main screen and stepper, the Pac-Man preview, the Mario scene with the new Goomba. Super Mario after a mushroom was checked from a rendered contact sheet only; the phone was in use at the time.
+
+## Mario walk cycle, two-brick obstacles, and the end-of-charge finale
+- **Date:** 2026-10-31  **Branch:** feature/smb_theme
+- **Decision:**
+  - **Walk:** the frame now changes every 6 Mario pixels of ground covered (was 4), so the feet stay planted instead of shuffling. Poses are contact (feet apart), down, passing (one foot under the body, the other lifted behind), down. Super Mario's stride is shorter than before; his legs no longer open into a wide V.
+  - **Obstacles:** pipes are 20×10 Mario pixels (about two ground bricks wide) with a flared lip and shading; hard, brick, ice, note and donut blocks come two wide (`wide()` repeats each row). The Piranha Plant is centred in its pipe.
+  - **Finale:** when the phone stops charging while plugged in, the Mario scene ends the level: obstacles stop spawning, a flagpole scrolls in, Mario jumps and grabs it (550 ms), slides down it with the flag (1.1 s), walks to the castle, fades out at the door (350 ms), the castle flag rises and fireworks burst on alternate sides. The pole and castle sit between and below the ? blocks, so the time stays readable. Charging resuming, or the charger coming out, starts a new level. If the clock opens when charging has already ended, it shows the finished level at once.
+  - **What counts as "stopped charging":** `ACTION_BATTERY_CHANGED` with the charger connected and status FULL, or level 100, or status NOT_CHARGING at 80% or more. Samsung's Protect battery limit is expected to show up as NOT_CHARGING; the 80% floor stops a short heat pause lower down counting as the end.
+  - **Info text:** on the Mario theme the corner text reads COURSE CLEAR! / the level / CHARGING ENDED instead of CHARGING.
+  - **Previews:** the main screen's "Preview: charging complete" button plays the chosen theme's ending on an unlocked phone, in the charging layout (superseded the first version, which forced the Mario theme). Debug builds also take `TEST_MARIO_FINISH` over adb to toggle the Mario one.
+- **Why:** User requests: the leg animation looked worse, obstacles should be two bricks long as in the game, and charging should end like a finished level.
+- **Not verified on the phone:** the finale, the new walk frames in motion, and whether the M34 reports NOT_CHARGING when its limit cuts in. The 80% floor and the status test are assumptions to check against the event log (`charge complete=... status=... level=...` lines).
+- **Research limits:** sources agree on a three-frame walk and a 16×16 tile grid but give no disassembly-level frame timing, so the 6-pixel step and the pipe widths follow the game's proportions, not measured values.
+
+## Pac-Man ending
+- **Date:** 2026-10-31  **Branch:** feature/smb_theme
+- **Decision:** When charging ends (same trigger as the Mario finale), the Pac-Man frame plays an arcade level-clear. The muncher runs the rest of the maze at 45 ms per percent (0.6 to 3.5 s in all), eating every remaining dot and the ghosts it passes. Once it is back at the start, the ghosts disappear and the maze walls flash white and blue four times (8 steps of 250 ms), then stay blue with every dot spent. The corner text reads LEVEL CLEAR! / the level / CHARGING ENDED. Charging resuming or unplugging restores the normal frame; a clock opened with charging already ended shows the finished maze at once.
+- **Why:** User request, to match the Mario level end. The flash and the vanishing ghosts follow the arcade's level-clear sequence.
+- **Not verified on the phone.** The Mario and Pac-Man endings were only checked by build and lint, and one partial run of the Mario one (the phone was in use at the time).
+
+## Mario drawn from the supplied NES reference sprites
+- **Date:** 2026-10-31  **Branch:** feature/smb_theme
+- **Decision:** Small and Super Mario now use the reference images the user supplied (`docs/sprites/nes-reference-*.png`), read pixel by pixel: the standing small (11×16) and Super (16×32) sprites, a small walking pose, a Super striding pose, and the Super jump. Colours are the reference's NES palette (red #B53120, brown #6B6D00, skin #EA9E22), so the overalls are red and the shirt brown, replacing the earlier blue overalls. Fire Mario is the jump sprite with red→cream and brown→red, as in the reference. The small walking pose and the Super striding pose face left in the reference and are mirrored. Two "passing" poses and the small jump are derived from the standing sprites (a foot lifted, or the legs apart). All frames are padded to 16 columns so the mirrored sprites stay centred.
+- **Why:** User request: the redrawn Super Mario and the walk still did not look like the original.
+- **Not verified on the phone.** Checked by a rendered contact sheet, build and lint only.
+
+## Wiki sprites from SMB_iCON, and the game's movement and hit rules
+- **Date:** 2026-10-31  **Branch:** feature/smb_theme
+- **Decision:**
+  - **Sprites:** `MarioSprites.kt` is generated from the Mario Wiki PNGs in `SMB_iCON/` (script kept outside the repo): small, Super and Fire Mario, Goomba, Koopa and its shell, Buzzy Beetle and shell, Piranha Plant, warp pipe, hard and brick blocks, mushroom, 1-Up, fire flower and star. The wiki only has standing poses, so Mario's walk and jump poses change only legs (small) or reuse the earlier reference stride and jump (Super). The pipe is cut from 32 to 16 pixels tall and the ? blocks shrink from 36% to 32% of the height, so a Super Mario with 17-21 pixels of headroom can still clear 16-pixel obstacles. Ground, ? block and castle colours now use the wiki's brown and gold.
+  - **Removed** the non-SMB1 obstacles (spike, ice, note and donut blocks), per `super_mario_bros_complete_mariowiki_documentation.md`. Buzzy Beetles replace them.
+  - **Momentum and friction:** the world and Mario's own walk accelerate from rest, run when the way is long, brake on the spot and skid (standing pose) when turning. Both use ACCEL/FRICTION/SKID in dp/ms².
+  - **Hold-to-jump:** gravity is halved while rising and "A" is held. Mario always takes off at the speed a fully held jump needs, and the hold time (found by bisection) sets the apex between half and all of the available height; lower is a tap. The block punch is a full hold until his head meets the block, which bumps, stops his rise and drops him.
+  - **Hit states:** Super or Fire shrinks to small with 2 s of flashing; small Mario dies (freezes 400 ms, hops, falls off screen) and returns at the middle with nearby enemies cleared, resuming any punch he was making.
+  - **Doc rules added:** a Piranha Plant stays down while Mario is next to its pipe; a kicked shell knocks out enemies; Buzzy Beetles shrug off fireballs and must be stomped; fireworks only when the last minute digit is 1, 3 or 6 (that many bursts); the flagpole grab shows 5000; after a cleared level every Goomba is a Buzzy Beetle and enemies are 1.4x faster (second quest, until the app restarts).
+  - **Not done:** timer and warning bell, warp-pipe entry, Lakitu, Spiny, Hammer Bro, springboard, coin counting (no room in a 114-pixel scene, or no meaning on a clock).
+- **Why:** User request: use the characters in SMB_iCON and the documentation's mechanics.
+- **Verified on the SM-M346B (preview):** wiki sprites render, a punch walks under the block, jumps and bumps it with the new digit and an item, mushroom and flower power-ups, a pipe with a plant, and a Buzzy Beetle. Not seen on the phone: death, the finale with fireworks, a shell kill, a skid.
+- **Note:** installing the build killed the notification listener; it was rebound with `cmd notification disallow_listener` / `allow_listener`.
+
+## Original-maze Pac-Man charging scene
+- **Date:** 2026-11-01
+- **Decision:**
+  - Connected the existing `PacmanGame` engine and generated sprite/maze images to `ArcadeView`, replacing its decorative 100-dot border for the Pac-Man theme.
+  - The maze occupies the left pane; `ClockActivity` places the time, date and notification content beside it. The Mario scene and charging-info behavior remain separate.
+  - Rendered the original five-character cast, directional and frightened ghost states, returning eyes, cherries, score popups, lives, READY/GAME OVER and the level-clear flash. Death uses a geometric opening animation because the source atlas has no death frames.
+  - The level-1 autopilot is a clock adaptation: battery progress caps eaten pellets, and charging completion unlocks the last pellet. A long-stall assist lets the autopilot finish. This is not a complete arcade-game emulator or multi-board progression.
+  - Simulation uses 60 fixed ticks per second with about 30 rendered frames per second, stops when hidden, and drops long elapsed-time gaps on resume.
+  - Fixed new-game state/counter reset, signed Inky target packing, and an initialization stall at fruit spawn count 70. The stall happened because prefill advanced movement without the normal fruit-collision handler.
+  - Added six JVM regression tests covering maze contents/reachability/tunnels, multiple starting battery levels, quota enforcement, charge completion and restart, house-counter reset and negative Inky target coordinates.
+  - Corrected `art/pacman/SOURCE-README.txt` to describe the actual five build inputs and the script-derived atlas graphics.
+- **Verified:** `:app:testDebugUnitTest`, `:app:assembleDebug`, `:app:lintDebug` passed using Android Studio's bundled JDK and the local Gradle cache. Six tests passed. Device detection succeeded for the SM-M346B.
+- **Pending:** Install and visually check the new maze/clock layout, notification-card sizing, movement and finale on the phone. No APK was installed during this change, so notification-listener rebinding was not exercised. Pixel-perfect ROM timing, original cornering, the original random stream, authentic death frames and later-board rules remain outside the current clock adaptation.

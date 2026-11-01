@@ -165,3 +165,157 @@ Verified on the SM-M346B:
 - Charging layout screenshot shows the bigger digits with the date top left.
 - The user confirmed Stop and Start each take one tap.
 - Lint: 0 errors.
+
+## no-branch (standby clock v9: bind watchdog, lock-on-timeout, genie)
+Adds to v8; supersedes v5's Start sequence and the swipe animation of v6/v7 (2026-10-30).
+
+1. **Start sequence.** Each tap does the first thing still missing:
+   1. Notification access.
+   2. Full-screen notifications (Android 14+).
+   3. Notification permission (Android 13+).
+   4. Device admin (lock screen only).
+   5. Clear the `stopped_by_user` flag and run `ensureBound`: `requestRebind`, then toggle the `SensorService` component off and on.
+   Stop sets `stopped_by_user` and calls `requestUnbind`.
+2. **Watchdog.** `BindWatchdog` (JobScheduler id 1, every 15 min, persisted) runs `ensureBound`. It does nothing if the listener is live, the user pressed Stop, or access is missing. Each rebind it requests is logged as `rebind requested (start|watchdog)`. It is scheduled whenever the main screen opens.
+3. **Lock on timeout.** On `SCREEN_OFF` while sideways and charging, if the lock screen is not up and the admin is active, `lockNow()` is called (`locked for standby`). The lock poll then shows the clock without waiting for the auto-lock delay.
+4. **Genie swipe.** Swiping the card past 30% snapshots it, hides it, and pours it into its app icon with `GenieView`. The icon pops, then `clearApp` removes that app's notifications.
+
+Failure paths:
+- If the job is delayed by Doze, a dropped listener can stay down for up to the job's flex window. Opening the app or tapping Start fixes it immediately.
+- Without the device admin, a timeout falls back to waiting for the auto-lock delay.
+
+Verified on the API 37 emulator:
+- Bound + background = adj 200/250.
+- After `kill -9`, Android re-bound in about 5 s.
+- The watchdog re-bound an allowed-but-unbound listener.
+- Stop then Start through the buttons gives live 0 → 1.
+
+Not verified on the emulator (no type-27 sensor): the standby trigger, lock-on-timeout and genie. They need the SM-M346B, which disconnected from adb.
+
+**Update on the SM-M346B (2026-10-30):**
+- `ACTION_DREAMING_STARTED` is handled like `SCREEN_OFF`, because a charging M34 starts the screen saver on timeout instead of turning off. Verified: screen saver at 10:25:32.532, clock requested at 10:25:32.826.
+- The device admin was activated by the user from Start.
+- The watchdog job is scheduled.
+- After the install the listener was live.
+- Still unverified on the device: the unlocked → timeout → `lockNow()` path, and the genie swipe.
+
+## no-branch (standby clock v10: themes, DND, listener recovery, scenario script)
+Adds to v9 (2026-10-30).
+
+1. **Theme.** The main screen has a Theme button cycling Pac-Man / Super Mario. `ClockActivity.onStart` applies it to `ArcadeView`, `StandbyClockView` and the date. Super Mario uses brick digits, a coin loop, ? blocks and the user's sprites from `res/drawable-nodpi/mario_run_1.png` / `mario_run_2.png` (placeholder until added).
+2. **DND.** The lock-screen clock showing turns on priority-only DND if it was off. The clock hiding restores it. A dead process's leftover DND is restored on the next connect.
+3. **Card.** An opened card hides after 3 s unless it is being touched.
+4. **Launch.** Every clock request cancels and re-posts the full-screen notification.
+5. **Listener recovery.**
+   - A 1-minute non-waking alarm and the 15-minute job check the listener.
+   - If it is dead: toggle the component (works on stock Android), then post "Standby Clock stopped". The notification opens the app's notification-access page, where switching it off and on re-binds it on One UI. It is cleared on connect.
+   - Start opens that page itself if the listener hasn't connected within 3.5 s.
+6. **Notch.** The window covers the display cutout. The outer wall goes round each cutout rect with a 3 dp gap.
+
+**Scenario script.** `scripts/standby-scenarios.sh` simulates charging with `dumpsys battery` and always resets it at the end. Precondition: the phone is locked and sideways. It checks:
+1. Charging + power button → clock, keep-on, DND on.
+2. Unplug → clock stays, keep-on off.
+3. Battery + power button → screen stays off, DND restored.
+4. Battery + wake → clock, no keep-on.
+5. Re-plug → keep-on again.
+Result on the SM-M346B with the final build: 11/11 PASS (an earlier run after a mid-standby reinstall failed 7/11, which led to the fresh-post and DND-persistence fixes).
+
+Failure paths: on One UI a killed listener stays down until the user switches access off/on from the prompt. DND stays on in that window.
+
+## Super Mario 2D Parallax Clock & Clean Charging Theme (v11)
+Adds to v10 (2026-10-30).
+
+1. **Parallax Horizon & Ground:**
+   - 4-layer parallax scrolling: ground bricks (1.0x walking speed), bushes (0.65x), green hills (0.35x), drifting clouds (0.15x + time drift).
+   - Mario walks continuously at ~30 fps cycling `mario_run_1` and `mario_run_2`.
+2. **Sequential Block Punching on Time Change:**
+   - Minute change only: Mario walks under the minute block, leaps up (`mario_jump` with raised hand), punches and bumps only the minute block to update its digit, lands, and walks back to center.
+   - Hour and minute change: Mario walks under the hour block, jumps and punches it (only hour block bumps and updates digit), lands, walks across under minute block, jumps and punches it (only minute block bumps and updates digit), lands, and returns to center.
+3. **Clean Charging Information:**
+   - Stripped track runner, inner wall, and 100 extra collection coins / Goombas for Mario theme in `ArcadeView`.
+   - Directly displays the lightning bolt, "CHARGING", battery level percentage (e.g. `41%`), and ETA (e.g. `until 95%`) in the top-right corner framed by outer brick wall.
+
+## no-branch (standby clock v12: borderless pixel Mario, obstacles, icons on the bricks)
+Adds to v11 (2026-10-30). Supersedes v11's runner sprites and the brick frame.
+
+1. **Frame.** Mario theme: no outer wall. `ArcadeView` draws only the charging info, now in the top right corner in dark grey (`Theme.marioInk`) with the Material `bolt` icon. The date sits in the top left corner in the same ink. No 64 dp content inset.
+2. **Rendering.** Each frame `MarioSceneView` draws sky, clouds, hills, bushes, bricks, ? blocks, obstacles and Mario into a low-resolution bitmap (one pixel per Mario pixel), scales it up unfiltered, then draws the dark grey digits at full resolution on top.
+3. **Walking.** About every 33 ms `step()` runs:
+   - When no punch is running, the world scrolls 0.2 dp/ms.
+   - Spawns a pipe or Goomba just off the right edge every 0.5–1 screen widths, moves Goombas left, and drops obstacles that are off screen or were flattened over 0.5 s ago.
+   - Applies gravity. Mario stands on a pipe he is over.
+   - Auto-jumps a pipe ahead (16 px high), or hops (12 px) so he lands on a Goomba. Landing on a Goomba flattens it and bounces him.
+   - The walk frame (1-2-3-2) changes every 4 Mario pixels walked.
+4. **Block punch.** Same sequence as v11, but the world holds still while Mario walks to the block on screen. Obstacles are still jumped or stomped on the way.
+5. **Icons.** After the scene is laid out, and on every power change, `ClockActivity.positionIcons()` centres the 20 dp icons on the first brick row and puts the card above them.
+
+Failure paths: if the notification listener is unbound (after every reinstall on One UI), there are no icons. Rebind from the "Standby Clock stopped" prompt, or with `cmd notification allow_listener`.
+
+## no-branch (standby clock v13: punch queue, tap-to-count, idle revert)
+Adds to v12 (2026-10-30). Supersedes v11/v12's "Sequential Block Punching" and the left/right-half tap test.
+
+1. **Punch queue.** `MarioSceneView` keeps a queue of punches, each a block and the value it shows after the hit. `nextPunch()` works through it:
+   - Mario walks under the block (no walk if he's already there), jumps and bumps it, and the value changes at the apex.
+   - When the queue is empty, he walks back to the centre. If the real time has moved on and no revert is pending, he punches that in first.
+2. **Tap.** ACTION_UP inside a block (`blockAt`) queues +1 on that block, counted from its last queued value, and restarts a 5 s revert timer. `ClockActivity` keeps these touches away from the double-tap detector, so tapping blocks never closes the clock.
+3. **Revert.** 5 s after the last tap, `reconcile()` queues one step per punch from each block's last queued value to the real time, hour first, the shortest way round.
+4. **Minute tick.** Skipped while a revert is pending or a punch is running. Otherwise it calls `reconcile()`, which normally means one minute punch, plus an hour punch at the top of the hour.
+5. **Detach.** The revert timer and queue are cleared. Cancelled animations do not chain into the next punch.
+6. **Scale.** One Mario pixel is `height × 0.18 / 16`. Pipes are 10×6 and Goombas 10×8. Jumps are 10 px, capped below the blocks.
+
+Test broadcasts: `TEST_MARIO_HOUR` / `TEST_MARIO_MINUTE` act as one tap on that block. `TEST_MARIO_BOTH` taps both.
+
+## no-branch (standby clock v14: power-ups, full enemy and obstacle set)
+Adds to v13 (2026-10-30). Supersedes v12/v13's "pipes and Goombas only" course and the 0.18 scale.
+
+1. **Each frame (`step`)**
+   - **Scrolling:** the world scrolls unless a punch runs, Mario is waiting at a Piranha Plant, or he is growing or shrinking.
+   - **Spawning:** a weighted-random obstacle appears just off the right edge every 0.45–0.9 screen widths.
+   - **Movement:** Goombas and Koopas walk left, shells slide left fast, and donut blocks fall once 0.5 s have passed since Mario stood on them. Flattened, knocked-out, fallen and off-screen obstacles are removed.
+   - **Items and fireballs** move (below).
+   - **Wear-off:** after 3 minutes the power level drops one step.
+   - **Physics:**
+     - Gravity applies. Mario stands on the tallest solid obstacle under him, and a note block springs him on landing.
+     - On contact, an enemy is knocked out by the star, stomped when Mario is falling, and otherwise hurts him. Spikes and an up Piranha Plant hurt him; with the star the plant is removed.
+     - On the ground, Fire Mario fires at a target ahead. Mario waits at a Piranha Plant that is up, and jumps the next obstacle (enemies timed to land on them), capped below the ? blocks.
+2. **Items:** the first punch that lands with no item out spawns one: mushroom when small, flower when Super, star or 1-Up when Fire.
+   - It rises out of the block over 0.5 s (drawn behind it), then hops sideways away from the centre and falls.
+   - On the ground it slides towards Mario.
+   - Touching Mario applies it. Off screen, or after 20 s, it is gone.
+3. **Fireballs** fly 0.12 px/ms and bounce on the ground. They knock out the first enemy or plant they touch and vanish on any other obstacle.
+4. **Hurt:** Mario drops to small, flashes for 2 s with no further hits, and bounces.
+5. **Drawing order:** sky, clouds, smiling cloud, hills, bushes, bricks, items, ? blocks, Piranha Plants (clipped to above their pipe), obstacles, fireballs, Mario (palette swaps for Fire and star; flicker while changing size), "1UP".
+6. **Charging info (Mario):** 1.4× text and Material bolt in the top right corner.
+
+Failure paths: none new. Everything runs inside the view's frame loop and stops when the view is hidden or detached.
+
+## feature/smb_theme (Mario theme integration fixes)
+Amends v13/v14 (2026-10-31).
+
+1. **Frame loop.** `MarioSceneView` animates only while it is visible in a visible window. With the Pac-Man theme it is GONE and never animates.
+2. **Touches.** A touch that goes down on a ? block is the block's (punch on ACTION_UP). Any other touch passes to the clock behind it: a tap hides the notification card, and icons and the card work as before. The double tap still closes the clock everywhere except on the blocks.
+3. **Test broadcasts.** `TEST_MARIO_HOUR` / `TEST_MARIO_MINUTE` / `TEST_MARIO_BOTH` work only in debug builds. Release builds ignore them.
+
+Failure paths: none new.
+
+## feature/smb_theme (end-of-charge finale)
+Amends v13/v14 (2026-10-31). Mario theme only.
+
+1. **Trigger.** `ClockActivity` reads every `ACTION_BATTERY_CHANGED`: plugged in, and status FULL, or level 100, or status NOT_CHARGING at 80% or more. The change is logged as `charge complete=<bool> status=<n> level=<n>` and passed to `MarioSceneView.complete` and `ArcadeView.complete`.
+2. **Start.** Once Mario is idle (no punch running or queued, none pending after a tap, on the ground), spawning stops and a flagpole is placed past the last obstacle, off the right edge. Obstacles already out are jumped as usual.
+3. **Pole.** When one jump from here ends with Mario's hands on the pole, he leaps (550 ms), the world snaps so he is exactly at the pole, and he slides down it (1.1 s) with the flag. After a 350 ms pause he walks right, the world scrolling, until the castle door is under him.
+4. **Castle.** He fades out at the door (350 ms), the castle flag rises (1.2 s) and fireworks burst every second, alternating sides, until charging resumes or the charger is removed. Taps and minute ticks no longer move Mario; the blocks just show the time.
+5. **Reset.** Charging resuming or unplugging clears the finale and a new level starts from the middle. A clock opened while already finished starts at step 4 with Mario inside.
+6. **Previews.** "Preview: charging complete" opens `ClockActivity` with `EXTRA_PREVIEW_COMPLETE`: the chosen theme, charging layout, battery updates ignored, ending started after 1.2 s. Opening it again restarts it.
+
+Failure paths: if the phone never reports FULL or NOT_CHARGING at 80% or more (a different limit behaviour), the finale never starts and the clock shows CHARGING until unplugged; the log's `status=` and `level=` values show why.
+
+## feature/smb_theme (Pac-Man ending)
+Same trigger as the Mario finale; `ArcadeView.complete` drives it.
+
+1. **Run.** The muncher speeds from its current percent to 100, eating the remaining dots and the ghosts on the way. The run takes 45 ms per percent left, between 0.6 and 3.5 s.
+2. **Flash.** The ghosts disappear and the walls alternate white and blue every 250 ms, eight steps, then stay blue. The dots stay dimmed (eaten) and the muncher waits at the start.
+3. **Info.** LEVEL CLEAR! / the level / CHARGING ENDED replaces CHARGING; the bolt is hidden.
+4. **Reset.** Charging resuming or unplugging restores the normal frame. Opened already finished, the maze appears finished.
+
+Failure paths: as for the Mario finale, if the phone never reports the end of charging (full, or "not charging" at 80% or more), nothing starts and the event log's `status=` and `level=` show why.

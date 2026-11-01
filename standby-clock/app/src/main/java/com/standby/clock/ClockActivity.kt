@@ -11,8 +11,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.BatteryManager
@@ -50,13 +54,18 @@ class ClockActivity : Activity() {
     private lateinit var arcade: ArcadeView
     private lateinit var battery: BatteryView
     private lateinit var clock: StandbyClockView
+    private lateinit var mario: MarioSceneView
     private lateinit var date: TextClock
+    private lateinit var genie: GenieView
     private var iconSize = 22
     private var cardPackage: String? = null
     private var cardNotification: StatusBarNotification? = null
     private var opening = false
     /** Opened from the app's Preview button: may show unlocked, and only closes on double tap or Back. */
     private var preview = false
+    /** Opened from the app's "Preview: charging complete" button: plays the end-of-charge ending of the chosen theme. */
+    private var previewComplete = false
+    private var charged = false
     private var swipeStartX = 0f
     private var swiping = false
 
@@ -68,8 +77,12 @@ class ClockActivity : Activity() {
         override fun onReceive(context: Context, intent: Intent) { if (!opening && !preview) finish() }
     }
     private val power = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) =
-            applyPower(intent.action == Intent.ACTION_POWER_CONNECTED, animate = true)
+        override fun onReceive(context: Context, intent: Intent) {
+            if (!previewComplete) applyPower(intent.action == Intent.ACTION_POWER_CONNECTED, animate = true)
+        }
+    }
+    private val batteryChanged = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) { if (!previewComplete) applyCharge(intent) }
     }
     private val refreshIcons = Runnable { showIcons() }
     private val notificationsChanged = object : BroadcastReceiver() {
@@ -82,8 +95,15 @@ class ClockActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        preview = intent.getBooleanExtra(EXTRA_PREVIEW, false)
+        previewComplete = intent.getBooleanExtra(EXTRA_PREVIEW_COMPLETE, false)
+        preview = intent.getBooleanExtra(EXTRA_PREVIEW, false) || previewComplete
         window.setBackgroundDrawableResource(android.R.color.black)
+        // Lay out into the camera cutout too, so the arcade's outer wall can bend around the punch-hole.
+        window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= 30)
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
         doubleTap = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 if (!preview) SensorService.instance?.clockDismissed()
@@ -109,7 +129,7 @@ class ClockActivity : Activity() {
             setOnClickListener { cardNotification?.let { open(it) } }
             setOnTouchListener { v, e -> swipeCard(v, e) }
             setPadding(dp(16), dp(12), dp(16), dp(14))
-            background = GradientDrawable().apply { setColor(Color.argb(235, 38, 38, 40)); cornerRadius = dp(22).toFloat() }
+            background = GradientDrawable().apply { setColor(materialSurface()); cornerRadius = dp(22).toFloat() }
             addView(LinearLayout(this@ClockActivity).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 addView(cardIcon, LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(8) })
@@ -121,6 +141,7 @@ class ClockActivity : Activity() {
         arcade = ArcadeView(this)
         battery = BatteryView(this)
         clock = StandbyClockView(this)
+        mario = MarioSceneView(this)
         date = TextClock(this).apply {
             format12Hour = "EEEE d MMMM"
             format24Hour = "EEEE d MMMM"
@@ -144,19 +165,32 @@ class ClockActivity : Activity() {
             setBackgroundColor(Color.BLACK)
             alpha = 0f
             setOnClickListener { hideCard() }
+            // The Mario theme extends edge-to-edge behind the arcade walls and content.
+            addView(mario, FrameLayout.LayoutParams(-1, -1))
             addView(arcade)
             addView(content)
+            genie = GenieView(this@ClockActivity)
+            addView(genie)
         }
         setContentView(root)
-        val plugged = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            ?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
-        applyPower(plugged != 0, animate = false)
+        root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) layoutContent()
+        }
+        // The Mario icons follow the ground, which is only known once the scene has its size.
+        mario.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop) root.post { positionIcons() }
+        }
+        val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val plugged = battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+        applyPower(plugged != 0 || previewComplete, animate = false)
+        if (!previewComplete) battery?.let { applyCharge(it) } else playFinale()
         revealIfLandscape(resources.configuration)
         register(closer, IntentFilter(SensorService.ACTION_HIDE_CLOCK))
         // USER_PRESENT comes from SystemUI, an app uid, which a not-exported receiver silently drops. It is a
         // protected broadcast, so only the system side can send it and exporting this receiver is safe.
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(unlocked, IntentFilter(Intent.ACTION_USER_PRESENT), RECEIVER_EXPORTED)
         else registerReceiver(unlocked, IntentFilter(Intent.ACTION_USER_PRESENT))
+        register(batteryChanged, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         register(power, IntentFilter().apply {
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
@@ -169,6 +203,35 @@ class ClockActivity : Activity() {
         super.onStart()
         showing = true
         getSystemService(NotificationManager::class.java).cancel(SensorService.CLOCK_NOTIFICATION_ID)
+        applyTheme(Theme.current(this))
+        if (!preview) SensorService.instance?.setStandbyQuiet(true)
+    }
+
+    private var theme = Theme.PACMAN
+
+    private fun applyTheme(value: Theme) {
+        theme = value
+        arcade.theme = value
+        clock.visibility = if (value == Theme.MARIO) View.GONE else View.VISIBLE
+        mario.visibility = if (value == Theme.MARIO) View.VISIBLE else View.GONE
+        date.typeface = if (value == Theme.MARIO) resources.getFont(R.font.press_start_2p)
+        else Typeface.create(resources.getFont(R.font.nunito), 800, false)
+        // Pac-Man: the arcade's lilac, as on the "95% IN" line.
+        date.setTextColor(if (value == Theme.MARIO) Theme.marioInk(this) else Color.rgb(0x8F, 0x98, 0xFF))
+        applyPower(plugged, animate = false)
+        applyDnd()
+    }
+
+    private var plugged = false
+
+    /** Press Start 2P is much wider than Nunito, so the Mario date uses a smaller size. */
+    private fun applyDateSize() {
+        date.textSize = when {
+            theme == Theme.MARIO && plugged -> 9f
+            theme == Theme.MARIO -> 13f
+            plugged -> 16f
+            else -> 22f
+        }
     }
 
     // The rotation from the portrait lock screen is handled in place (configChanges in the manifest)
@@ -178,16 +241,22 @@ class ClockActivity : Activity() {
         revealIfLandscape(newConfig)
     }
 
-    /** Launched over the portrait lock screen, the window starts upright; stay black until it is sideways. */
+    /** Launched over the portrait lock screen, the window starts upright; stay black until it is sideways (or always in preview). */
     private fun revealIfLandscape(config: Configuration) {
-        if (config.orientation == Configuration.ORIENTATION_LANDSCAPE && root.alpha == 0f) {
+        if ((preview || config.orientation == Configuration.ORIENTATION_LANDSCAPE) && root.alpha == 0f) {
             root.animate().alpha(1f).setDuration(150).start()
         }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        preview = intent.getBooleanExtra(EXTRA_PREVIEW, false)
+        previewComplete = intent.getBooleanExtra(EXTRA_PREVIEW_COMPLETE, false)
+        preview = intent.getBooleanExtra(EXTRA_PREVIEW, false) || previewComplete
+        if (previewComplete) {
+            applyTheme(Theme.current(this))
+            applyPower(true, animate = false)
+            playFinale()
+        }
     }
 
     // Standby is for the locked screen only. USER_PRESENT reached this activity ~6 s after a fingerprint
@@ -211,6 +280,7 @@ class ClockActivity : Activity() {
 
     override fun onStop() {
         showing = false
+        SensorService.instance?.setStandbyQuiet(false)
         super.onStop()
     }
 
@@ -223,14 +293,18 @@ class ClockActivity : Activity() {
         }
     }
 
-    override fun dispatchTouchEvent(ev: MotionEvent): Boolean =
-        doubleTap.onTouchEvent(ev) || super.dispatchTouchEvent(ev)
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // Taps on the Mario ? blocks punch them; tapping those quickly must not count as the closing double tap.
+        if (mario.visibility == View.VISIBLE && mario.blockAt(ev.x, ev.y) != null) return super.dispatchTouchEvent(ev)
+        return doubleTap.onTouchEvent(ev) || super.dispatchTouchEvent(ev)
+    }
 
     override fun onDestroy() {
         icons.removeCallbacks(refreshIcons)
         unregisterReceiver(closer)
         unregisterReceiver(unlocked)
         unregisterReceiver(power)
+        unregisterReceiver(batteryChanged)
         unregisterReceiver(notificationsChanged)
         super.onDestroy()
     }
@@ -238,6 +312,33 @@ class ClockActivity : Activity() {
     private fun register(receiver: BroadcastReceiver, filter: IntentFilter) {
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED)
         else registerReceiver(receiver, filter)
+    }
+
+    /**
+     * The phone has stopped charging while still plugged in: it reports full, or its own charge limit cut in (Samsung's
+     * Protect battery stops at a set percent and reports "not charging"). Below [CAPPED_FROM] percent a "not charging"
+     * report is a temporary pause (heat), not the end.
+     */
+    private fun applyCharge(battery: Intent) {
+        val level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, 0) * 100 /
+            battery.getIntExtra(BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1)
+        val status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
+        val done = battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0 && (
+            status == BatteryManager.BATTERY_STATUS_FULL || level >= 100 ||
+                status == BatteryManager.BATTERY_STATUS_NOT_CHARGING && level >= CAPPED_FROM)
+        if (done != charged) {
+            charged = done
+            EventLog.append(this, "charge complete=$done status=$status level=$level")
+        }
+        mario.complete = done
+        arcade.complete = done
+    }
+
+    /** Restarts the finale from the beginning, for the Preview button. */
+    private fun playFinale() {
+        mario.complete = false
+        arcade.complete = false
+        root.postDelayed({ mario.complete = true; arcade.complete = true }, 1_200)
     }
 
     /**
@@ -252,30 +353,82 @@ class ClockActivity : Activity() {
         battery.visibility = if (plugged) View.GONE else View.VISIBLE
         // Inside the arcade frame space is tight: date goes small to the top left and the icons shrink,
         // so the digits can grow.
-        date.textSize = if (plugged) 13f else 20f
+        this.plugged = plugged
+        mario.plugged = plugged
+        applyDateSize()
+        // Mario has no wall: the date goes in the top left corner, opposite the charging info.
+        val isMario = theme == Theme.MARIO
         date.layoutParams = FrameLayout.LayoutParams(-2, -2,
-            Gravity.TOP or if (plugged) Gravity.START else Gravity.CENTER_HORIZONTAL).apply {
-            topMargin = dp(if (plugged) 4 else 12)
-            marginStart = dp(if (plugged) 8 else 0)
+            Gravity.TOP or if (plugged || isMario) Gravity.START else Gravity.CENTER_HORIZONTAL).apply {
+            topMargin = dp(if (isMario) 20 else if (plugged) 4 else 12)
+            marginStart = dp(if (isMario) 24 else if (plugged) 8 else 0)
         }
         clock.heightFactor = if (plugged) 1.08f else 0.9f
-        iconSize = if (plugged) 16 else 22
+        iconSize = if (isMario) 20 else if (plugged) 16 else 22
         for (i in 0 until icons.childCount) icons.getChildAt(i).layoutParams = iconParams()
-        (icons.layoutParams as FrameLayout.LayoutParams).bottomMargin = dp(if (plugged) 4 else 12)
-        val inset = if (plugged) dp(64) else 0
-        content.layoutParams = FrameLayout.LayoutParams(-1, -1).apply { setMargins(inset, inset, inset, inset) }
+        positionIcons()
+        layoutContent()
+    }
+
+    /** The clock overlays the full-screen maze in a compact corner panel while charging. */
+    private fun layoutContent() {
+        val pacman = plugged && theme == Theme.PACMAN
+        content.setBackgroundColor(if (pacman) Color.argb(190, 0, 0, 0) else Color.TRANSPARENT)
+        content.layoutParams = if (pacman) FrameLayout.LayoutParams(
+            (root.width * 0.29f).toInt().coerceAtLeast(1), dp(110), Gravity.BOTTOM or Gravity.END
+        ).apply { setMargins(0, 0, dp(20), dp(12)) } else FrameLayout.LayoutParams(-1, -1)
+        if (pacman) {
+            date.layoutParams = FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START)
+            date.textSize = 9f
+        } else {
+            applyDateSize()
+        }
+    }
+
+    /** Mario: the icons sit in the first row of ground bricks, the card just above them. Otherwise the bottom edge. */
+    private fun positionIcons() {
+        val bottom = if (theme == Theme.MARIO && mario.height > 0)
+            (mario.height - mario.brickRowCenter() - dp(iconSize) / 2f).toInt()
+        else dp(if (plugged) 4 else 12)
+        icons.layoutParams = (icons.layoutParams as FrameLayout.LayoutParams).apply { bottomMargin = bottom }
+        card.layoutParams = (card.layoutParams as FrameLayout.LayoutParams).apply {
+            bottomMargin = maxOf(dp(48), bottom + dp(iconSize) + dp(12))
+        }
     }
 
     private fun latest(pkg: String) = SensorService.instance?.clockNotifications().orEmpty().firstOrNull { it.packageName == pkg }
 
-    /** One app icon per app with an unread notification. Only added/removed icons change, so they animate. */
+    /** Material You colours (Android 12+), with the earlier coral/charcoal as the fallback. */
+    private fun materialAccent() =
+        if (Build.VERSION.SDK_INT >= 31) getColor(android.R.color.system_accent1_200) else Color.argb(200, 255, 140, 130)
+
+    private fun materialSurface() =
+        if (Build.VERSION.SDK_INT >= 31) (getColor(android.R.color.system_neutral1_800) and 0x00FFFFFF) or (235 shl 24)
+        else Color.argb(235, 38, 38, 40)
+
+    /** With the user's own Do Not Disturb on, the clock shows just the time (and the arcade when charging). */
+    private fun applyDnd() {
+        icons.visibility = if (SensorService.instance?.userDnd() == true) View.GONE else View.VISIBLE
+        if (icons.visibility == View.GONE) hideCard()
+    }
+
+    /** Material-style icon: the notification's own monochrome glyph, tinted; the app icon only as a fallback. */
+    private fun glyph(sbn: StatusBarNotification): Drawable? =
+        runCatching { sbn.notification.smallIcon?.loadDrawable(createPackageContext(sbn.packageName, 0)) }.getOrNull()
+            ?.mutate()?.apply { setTint(Color.argb(230, 255, 255, 255)) }
+            ?: runCatching { packageManager.getApplicationIcon(sbn.packageName) }.getOrNull()
+
+    /** One icon per app with an unread notification. Only added/removed icons change, so they animate. */
     private fun showIcons() {
-        val packages = SensorService.instance?.clockNotifications().orEmpty().map { it.packageName }.distinct()
+        applyDnd()
+        val latest = SensorService.instance?.clockNotifications().orEmpty().distinctBy { it.packageName }
+        val packages = latest.map { it.packageName }
         for (i in icons.childCount - 1 downTo 0) if (icons.getChildAt(i).tag !in packages) icons.removeViewAt(i)
         val present = (0 until icons.childCount).map { icons.getChildAt(it).tag }
-        for (pkg in packages) {
+        for (sbn in latest) {
+            val pkg = sbn.packageName
             if (pkg in present) continue
-            val icon = runCatching { packageManager.getApplicationIcon(pkg) }.getOrNull() ?: continue
+            val icon = glyph(sbn) ?: continue
             icons.addView(ImageView(this).apply {
                 tag = pkg
                 setImageDrawable(icon)
@@ -296,9 +449,15 @@ class ClockActivity : Activity() {
         card.translationX = 0f
         card.translationY = dp(12).toFloat()
         card.animate().alpha(1f).translationY(0f).setDuration(220).start()
+        card.removeCallbacks(autoHide)
+        card.postDelayed(autoHide, CARD_TIMEOUT_MS)
     }
 
+    // An opened card goes away by itself after 3 s instead of staying up.
+    private val autoHide = Runnable { hideCard() }
+
     private fun hideCard() {
+        card.removeCallbacks(autoHide)
         cardPackage = null
         card.animate().alpha(0f).translationY(dp(12).toFloat()).setDuration(180)
             .withEndAction { if (cardPackage == null) card.visibility = View.GONE }.start()
@@ -307,7 +466,7 @@ class ClockActivity : Activity() {
     private fun fillCard(pkg: String) {
         val sbn = latest(pkg) ?: return hideCard()
         val extras = sbn.notification.extras
-        cardIcon.setImageDrawable(runCatching { packageManager.getApplicationIcon(pkg) }.getOrNull())
+        cardIcon.setImageDrawable(glyph(sbn))
         cardApp.text = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)) }
             .getOrDefault(pkg)
         cardTitle.text = extras.getCharSequence(Notification.EXTRA_TITLE)
@@ -319,7 +478,7 @@ class ClockActivity : Activity() {
     private fun swipeCard(v: View, e: MotionEvent): Boolean {
         val dx = e.rawX - swipeStartX
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { swipeStartX = e.rawX; swiping = false }
+            MotionEvent.ACTION_DOWN -> { swipeStartX = e.rawX; swiping = false; card.removeCallbacks(autoHide) }
             MotionEvent.ACTION_MOVE -> {
                 if (!swiping && abs(dx) > ViewConfiguration.get(this).scaledTouchSlop) swiping = true
                 if (swiping) {
@@ -329,7 +488,10 @@ class ClockActivity : Activity() {
             }
             MotionEvent.ACTION_UP -> when {
                 swiping && abs(dx) > v.width * 0.3f -> dismissCard(sign(dx))
-                swiping -> v.animate().translationX(0f).alpha(1f).setDuration(150).start()
+                swiping -> {
+                    v.animate().translationX(0f).alpha(1f).setDuration(150).start()
+                    card.postDelayed(autoHide, CARD_TIMEOUT_MS)
+                }
                 else -> v.performClick()
             }
             MotionEvent.ACTION_CANCEL -> v.animate().translationX(0f).alpha(1f).setDuration(150).start()
@@ -337,14 +499,42 @@ class ClockActivity : Activity() {
         return true
     }
 
+    /** Pours the swiped card into its app's icon (genie), pops the icon, then clears the app's notifications. */
     private fun dismissCard(direction: Float) {
         val sbn = cardNotification ?: return
         cardPackage = null
-        card.animate().translationX(direction * card.width).alpha(0f).setDuration(180).withEndAction {
-            card.visibility = View.GONE
-            card.translationX = 0f
+        val icon = (0 until icons.childCount).map { icons.getChildAt(it) }.firstOrNull { it.tag == sbn.packageName }
+        if (icon == null || card.width == 0) {
+            card.animate().translationX(direction * card.width).alpha(0f).setDuration(180).withEndAction {
+                card.visibility = View.GONE
+                card.translationX = 0f
+                SensorService.instance?.clearApp(sbn.packageName)
+            }.start()
+            return
+        }
+        val snapshot = Bitmap.createBitmap(card.width, card.height, Bitmap.Config.ARGB_8888)
+        card.draw(Canvas(snapshot))
+        val source = boundsInRoot(card).apply { offset(card.translationX, 0f) }
+        val target = boundsInRoot(icon)
+        val alpha = card.alpha
+        card.visibility = View.GONE
+        card.translationX = 0f
+        card.alpha = 1f
+        genie.play(snapshot, source, target, alpha) {
+            icon.animate().scaleX(1.35f).scaleY(1.35f).setDuration(90).withEndAction {
+                icon.animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+            }.start()
             SensorService.instance?.clearApp(sbn.packageName)
-        }.start()
+        }
+    }
+
+    /** [view]'s untransformed bounds in root coordinates. */
+    private fun boundsInRoot(view: View): RectF {
+        val r = IntArray(2).also { root.getLocationInWindow(it) }
+        val v = IntArray(2).also { view.getLocationInWindow(it) }
+        val left = (v[0] - r[0]).toFloat() - view.translationX
+        val top = (v[1] - r[1]).toFloat() - view.translationY
+        return RectF(left, top, left + view.width, top + view.height)
     }
 
     /** Asks for the normal Samsung unlock (fingerprint/PIN), then opens the notification like the shade does. */
@@ -375,6 +565,9 @@ class ClockActivity : Activity() {
 
     companion object {
         const val EXTRA_PREVIEW = "com.standby.clock.PREVIEW"
+        const val EXTRA_PREVIEW_COMPLETE = "com.standby.clock.PREVIEW_COMPLETE"
+        private const val CAPPED_FROM = 80
+        private const val CARD_TIMEOUT_MS = 3_000L
 
         /** True between onStart and onStop, so the service does not re-post the full-screen intent. */
         var showing = false
