@@ -34,6 +34,7 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextClock
 import android.widget.TextView
@@ -43,6 +44,7 @@ import kotlin.math.sign
 class ClockActivity : Activity() {
 
     private lateinit var icons: LinearLayout
+    private lateinit var iconDock: HorizontalScrollView
     private lateinit var card: LinearLayout
     private lateinit var cardIcon: ImageView
     private lateinit var cardApp: TextView
@@ -51,6 +53,7 @@ class ClockActivity : Activity() {
     private lateinit var doubleTap: GestureDetector
     private lateinit var root: FrameLayout
     private lateinit var content: FrameLayout
+    private lateinit var notificationPanel: FrameLayout
     private lateinit var arcade: ArcadeView
     private lateinit var battery: BatteryView
     private lateinit var clock: StandbyClockView
@@ -112,15 +115,23 @@ class ClockActivity : Activity() {
             }
         })
         val nunito = resources.getFont(R.font.nunito)
-        icons = LinearLayout(this).apply { layoutTransition = LayoutTransition() }
+        icons = LinearLayout(this).apply {
+            layoutTransition = LayoutTransition()
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = GradientDrawable().apply {
+                setColor(Theme.materialSurface(this@ClockActivity))
+                cornerRadius = dp(28).toFloat()
+                setStroke(dp(1), Theme.materialOutline(this@ClockActivity))
+            }
+        }
         cardIcon = ImageView(this)
-        cardApp = TextView(this).apply { textSize = 13f; setTextColor(Color.argb(170, 255, 255, 255)) }
+        cardApp = TextView(this).apply { textSize = 12f; setTextColor(materialAccent()); typeface = nunito }
         cardTitle = TextView(this).apply {
-            textSize = 16f; setTextColor(Color.WHITE); typeface = Typeface.create(nunito, 800, false)
+            textSize = 17f; setTextColor(Theme.materialText(this@ClockActivity)); typeface = Typeface.create(nunito, 800, false)
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
         }
         cardText = TextView(this).apply {
-            textSize = 14f; setTextColor(Color.argb(220, 255, 255, 255))
+            textSize = 14f; setTextColor(Theme.materialSecondary(this@ClockActivity)); typeface = nunito
             maxLines = 2; ellipsize = TextUtils.TruncateAt.END
         }
         card = LinearLayout(this).apply {
@@ -128,8 +139,12 @@ class ClockActivity : Activity() {
             visibility = View.GONE
             setOnClickListener { cardNotification?.let { open(it) } }
             setOnTouchListener { v, e -> swipeCard(v, e) }
-            setPadding(dp(16), dp(12), dp(16), dp(14))
-            background = GradientDrawable().apply { setColor(materialSurface()); cornerRadius = dp(22).toFloat() }
+            setPadding(dp(20), dp(16), dp(20), dp(18))
+            elevation = dp(6).toFloat()
+            background = GradientDrawable().apply {
+                setColor(Theme.materialSurface(this@ClockActivity)); cornerRadius = dp(24).toFloat()
+                setStroke(dp(1), Theme.materialOutline(this@ClockActivity))
+            }
             addView(LinearLayout(this@ClockActivity).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 addView(cardIcon, LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(8) })
@@ -156,7 +171,18 @@ class ClockActivity : Activity() {
                 FrameLayout.LayoutParams(dp(96), dp(16), Gravity.TOP or Gravity.END).apply {
                     topMargin = dp(18); marginEnd = dp(28)
                 })
-            addView(icons, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        }
+        iconDock = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            background = icons.background
+            icons.background = null
+            clipToOutline = true
+            contentDescription = "Notifications. Swipe for more apps."
+            addView(icons, FrameLayout.LayoutParams(-2, -2))
+        }
+        notificationPanel = FrameLayout(this).apply {
+            addView(iconDock, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
                 .apply { bottomMargin = dp(12) })
             addView(card, FrameLayout.LayoutParams(dp(380), -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
                 .apply { bottomMargin = dp(48) })
@@ -169,6 +195,7 @@ class ClockActivity : Activity() {
             addView(mario, FrameLayout.LayoutParams(-1, -1))
             addView(arcade)
             addView(content)
+            addView(notificationPanel, FrameLayout.LayoutParams(-1, -1))
             genie = GenieView(this@ClockActivity)
             addView(genie)
         }
@@ -195,7 +222,10 @@ class ClockActivity : Activity() {
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
         })
-        register(notificationsChanged, IntentFilter(SensorService.ACTION_NOTIFICATIONS_CHANGED))
+        register(notificationsChanged, IntentFilter().apply {
+            addAction(SensorService.ACTION_NOTIFICATIONS_CHANGED)
+            addAction(SensorService.ACTION_STATE_CHANGED)
+        })
         showIcons()
     }
 
@@ -373,49 +403,58 @@ class ClockActivity : Activity() {
     /** The clock overlays the full-screen maze in a compact corner panel while charging. */
     private fun layoutContent() {
         val pacman = plugged && theme == Theme.PACMAN
-        content.setBackgroundColor(if (pacman) Color.argb(190, 0, 0, 0) else Color.TRANSPARENT)
+        content.setBackgroundColor(Color.TRANSPARENT)
         content.layoutParams = if (pacman) FrameLayout.LayoutParams(
-            (root.width * 0.29f).toInt().coerceAtLeast(1), dp(110), Gravity.BOTTOM or Gravity.END
-        ).apply { setMargins(0, 0, dp(20), dp(12)) } else FrameLayout.LayoutParams(-1, -1)
+            minOf((root.width * 0.26f).toInt(), dp(160)).coerceAtLeast(1), dp(44), Gravity.TOP or Gravity.END
+        ).apply { setMargins(0, dp(2), dp(12), 0) } else FrameLayout.LayoutParams(-1, -1)
+        date.visibility = if (pacman) View.GONE else View.VISIBLE
         if (pacman) {
             date.layoutParams = FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START)
             date.textSize = 9f
         } else {
             applyDateSize()
         }
+        positionIcons()
     }
 
     /** Mario: the icons sit in the first row of ground bricks, the card just above them. Otherwise the bottom edge. */
     private fun positionIcons() {
+        val pacman = plugged && theme == Theme.PACMAN
         val bottom = if (theme == Theme.MARIO && mario.height > 0)
-            (mario.height - mario.brickRowCenter() - dp(iconSize) / 2f).toInt()
-        else dp(if (plugged) 4 else 12)
-        icons.layoutParams = (icons.layoutParams as FrameLayout.LayoutParams).apply { bottomMargin = bottom }
-        card.layoutParams = (card.layoutParams as FrameLayout.LayoutParams).apply {
-            bottomMargin = maxOf(dp(48), bottom + dp(iconSize) + dp(12))
+            (mario.height - mario.brickRowCenter() - dp(52) / 2f).toInt()
+        else dp(if (pacman || !plugged) 12 else 4)
+        iconDock.layoutParams = (iconDock.layoutParams as FrameLayout.LayoutParams).apply {
+            width = if (pacman) (root.width * 0.28f).toInt().coerceAtLeast(1)
+                else minOf(dp(320), (root.width - dp(32)).coerceAtLeast(1))
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            topMargin = 0
+            bottomMargin = bottom
         }
+        card.layoutParams = (card.layoutParams as FrameLayout.LayoutParams).apply {
+            width = minOf(dp(380), (root.width - dp(32)).coerceAtLeast(1))
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            bottomMargin = maxOf(dp(48), bottom + dp(52) + dp(12))
+        }
+        iconDock.background.alpha = if (pacman) 26 else 255
+        card.background.alpha = if (pacman) 26 else 255
     }
 
     private fun latest(pkg: String) = SensorService.instance?.clockNotifications().orEmpty().firstOrNull { it.packageName == pkg }
 
     /** Material You colours (Android 12+), with the earlier coral/charcoal as the fallback. */
-    private fun materialAccent() =
-        if (Build.VERSION.SDK_INT >= 31) getColor(android.R.color.system_accent1_200) else Color.argb(200, 255, 140, 130)
-
-    private fun materialSurface() =
-        if (Build.VERSION.SDK_INT >= 31) (getColor(android.R.color.system_neutral1_800) and 0x00FFFFFF) or (235 shl 24)
-        else Color.argb(235, 38, 38, 40)
+    private fun materialAccent() = Theme.materialAccent(this)
 
     /** With the user's own Do Not Disturb on, the clock shows just the time (and the arcade when charging). */
     private fun applyDnd() {
-        icons.visibility = if (SensorService.instance?.userDnd() == true) View.GONE else View.VISIBLE
+        icons.visibility = if (icons.childCount == 0 || SensorService.instance?.userDnd() == true) View.GONE else View.VISIBLE
+        iconDock.visibility = icons.visibility
         if (icons.visibility == View.GONE) hideCard()
     }
 
     /** Material-style icon: the notification's own monochrome glyph, tinted; the app icon only as a fallback. */
     private fun glyph(sbn: StatusBarNotification): Drawable? =
         runCatching { sbn.notification.smallIcon?.loadDrawable(createPackageContext(sbn.packageName, 0)) }.getOrNull()
-            ?.mutate()?.apply { setTint(Color.argb(230, 255, 255, 255)) }
+            ?.mutate()?.apply { setTint(materialAccent()) }
             ?: runCatching { packageManager.getApplicationIcon(sbn.packageName) }.getOrNull()
 
     /** One icon per app with an unread notification. Only added/removed icons change, so they animate. */
@@ -431,15 +470,18 @@ class ClockActivity : Activity() {
             val icon = glyph(sbn) ?: continue
             icons.addView(ImageView(this).apply {
                 tag = pkg
+                contentDescription = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)) }.getOrDefault(pkg)
+                setPadding(dp((44 - iconSize) / 2), dp((44 - iconSize) / 2), dp((44 - iconSize) / 2), dp((44 - iconSize) / 2))
                 setImageDrawable(icon)
                 setOnClickListener { if (cardPackage == pkg) hideCard() else showCard(pkg) }
             }, iconParams())
         }
         cardPackage?.let { if (it in packages) fillCard(it) else hideCard() }
+        applyDnd()
     }
 
     private fun iconParams() =
-        LinearLayout.LayoutParams(dp(iconSize), dp(iconSize)).apply { marginStart = dp(iconSize / 4); marginEnd = dp(iconSize / 4) }
+        LinearLayout.LayoutParams(dp(44), dp(44))
 
     private fun showCard(pkg: String) {
         cardPackage = pkg

@@ -6,53 +6,45 @@ import kotlin.math.floor
 
 /** The original level-1 maze (28x31 tiles, 8 px each). Direction order is the original's tie-break order. */
 object PacMaze {
-    const val COLS = 28
-    const val ROWS = 31
+    const val COLS = 62
+    const val ROWS = 25
     const val UP = 0
     const val LEFT = 1
     const val DOWN = 2
     const val RIGHT = 3
-    const val TUNNEL_ROW = 14
+    const val TUNNEL_ROW = 12
     val DX = intArrayOf(0, -1, 0, 1)
     val DY = intArrayOf(-1, 0, 1, 0)
 
     fun opposite(dir: Int) = dir xor 2
     fun idx(x: Int, y: Int) = y * COLS + x
+    fun region(index: Int): Int {
+        val x = index % COLS
+        val y = index / COLS
+        return minOf(4, x * 5 / COLS) + if (y >= ROWS / 2) 5 else 0
+    }
 
-    val TEXT = arrayOf(
-        "############################",
-        "#............##............#",
-        "#.####.#####.##.#####.####.#",
-        "#o####.#####.##.#####.####o#",
-        "#.####.#####.##.#####.####.#",
-        "#..........................#",
-        "#.####.##.########.##.####.#",
-        "#.####.##.########.##.####.#",
-        "#......##....##....##......#",
-        "######.##### ## #####.######",
-        "     #.##### ## #####.#     ",
-        "     #.##          ##.#     ",
-        "     #.## ###--### ##.#     ",
-        "######.## #      # ##.######",
-        "      .   #      #   .      ",
-        "######.## #      # ##.######",
-        "     #.## ######## ##.#     ",
-        "     #.##          ##.#     ",
-        "     #.## ######## ##.#     ",
-        "######.## ######## ##.######",
-        "#............##............#",
-        "#.####.#####.##.#####.####.#",
-        "#.####.#####.##.#####.####.#",
-        "#o..##.......  .......##..o#",
-        "###.##.##.########.##.##.###",
-        "###.##.##.########.##.##.###",
-        "#......##....##....##......#",
-        "#.##########.##.##########.#",
-        "#.##########.##.##########.#",
-        "#..........................#",
-        "############################",
-    )
-
+    // A landscape topology, not a scaled portrait board. Every corridor is an 8-pixel tile.
+    val TEXT: Array<String> = run {
+        val cells = Array(ROWS) { CharArray(COLS) { '#' } }
+        for (y in intArrayOf(1, 5, 9, 15, 19, 23))
+            for (x in 1 until COLS - 1) cells[y][x] = '.'
+        for (x in intArrayOf(1, 6, 12, 18, 24, 30, 31, 37, 43, 49, 55, 60))
+            for (y in 1 until ROWS - 1) cells[y][x] = '.'
+        // Alternate long blocks and short loops instead of repeating a uniform lattice.
+        for (x in intArrayOf(6, 18, 43, 55)) for (y in 6..8) cells[y][x] = '#'
+        for (x in intArrayOf(12, 24, 37, 49)) for (y in 16..18) cells[y][x] = '#'
+        // Side passages connect through the tunnel, but cannot cross the ghost house.
+        for (x in 0..24) cells[TUNNEL_ROW][x] = '.'
+        for (x in 37 until COLS) cells[TUNNEL_ROW][x] = '.'
+        for (y in 10..14) for (x in 27..34)
+            cells[y][x] = if (x == 27 || x == 34 || y == 10 || y == 14) '#' else ' '
+        cells[10][30] = '-'; cells[10][31] = '-'
+        for ((x, y) in arrayOf(1 to 1, 60 to 1, 1 to 23, 60 to 23)) cells[y][x] = 'o'
+        cells[TUNNEL_ROW][0] = ' '; cells[TUNNEL_ROW][COLS - 1] = ' '
+        cells[21][30] = ' '; cells[21][31] = ' '
+        Array(ROWS) { String(cells[it]) }
+    }
     /** 0 none, 1 dot, 2 energizer: the full board. */
     val pellets0 = IntArray(COLS * ROWS)
     /** Tiles Pac-Man and the ghosts can walk (the ghost house and its door are not part of it). */
@@ -72,8 +64,8 @@ object PacMaze {
         val queue = IntArray(COLS * ROWS)
         var head = 0
         var tail = 0
-        queue[tail++] = idx(13, 23)
-        walkable[idx(13, 23)] = true
+        queue[tail++] = idx(30, 21)
+        walkable[idx(30, 21)] = true
         while (head < tail) {
             val c = queue[head++]
             val cx = c % COLS
@@ -174,6 +166,11 @@ class PacmanGame {
         private set
     private var complete = false
     private var level = 0
+    var boardNumber = 1
+        private set
+    private var unlockedRegions = 0
+    private var regionIndex = 0
+    val activeRegion: Int get() = if (regionIndex < unlockedRegions) regionIndex else -1
     private var started = false
 
     // Scatter/chase wave clock, release counters and the other level-1 state.
@@ -217,20 +214,28 @@ class PacmanGame {
 
     /** Battery level and whether charging has finished; the maze is cleared only when it has. */
     fun setCharge(percent: Int, finished: Boolean) {
-        val wasComplete = complete
         level = percent.coerceIn(0, 100)
-        complete = finished
-        quota = PacMaze.totalPellets
-        if (!started) { started = true; newGame(); return }
-        if (wasComplete && !finished && (scene == CLEARED || scene == CLEARING)) newGame()
+        complete = level >= 100
+        if (!started || level < (boardNumber - 1) * 10) {
+            started = true
+            boardNumber = (level / 10 + 1).coerceAtMost(10)
+            newGame()
+        }
+        updateQuota()
     }
 
-    private fun newGame() {
+    private fun updateQuota() {
+        val progress = (level - (boardNumber - 1) * 10).coerceIn(0, 10)
+        unlockedRegions = progress
+        quota = PacMaze.pellets0.indices.count { PacMaze.pellets0[it] != 0 && PacMaze.region(it) < progress }
+    }
+
+    private fun newGame(resetScore: Boolean = true) {
         scene = READY
         System.arraycopy(PacMaze.pellets0, 0, pellets, 0, pellets.size)
         eaten = 0
-        score = 0
-        lives = START_LIVES
+        regionIndex = 0
+        if (resetScore) { score = 0; lives = START_LIVES }
         fruitSpawned1 = false
         fruitSpawned2 = false
         fruitTicks = 0
@@ -241,6 +246,7 @@ class PacmanGame {
         completeTicks = 0
         assist = false
         wander = -1
+        updateQuota()
         resetActors()
         startReady()
     }
@@ -269,7 +275,7 @@ class PacmanGame {
 
     /** Everyone back to the start positions: the same each life and board. */
     private fun resetActors() {
-        pac.px = 112f; pac.py = 188f; pac.dir = PacMaze.LEFT; pac.stopped = false
+        pac.px = 248f; pac.py = 172f; pac.dir = PacMaze.LEFT; pac.stopped = false
         pauseTicks = 0
         frightTicks = 0
         chain = 0
@@ -285,10 +291,10 @@ class PacmanGame {
             g.reverse = false
             g.stopped = false
             when (g.id) {
-                0 -> { g.px = 112f; g.py = 92f; g.dir = PacMaze.LEFT; g.mode = ACTIVE }
-                1 -> { g.px = 112f; g.py = 116f; g.dir = PacMaze.DOWN; g.mode = IN_HOUSE }
-                2 -> { g.px = 96f; g.py = 116f; g.dir = PacMaze.UP; g.mode = IN_HOUSE }
-                else -> { g.px = 128f; g.py = 116f; g.dir = PacMaze.UP; g.mode = IN_HOUSE }
+                0 -> { g.px = 248f; g.py = 76f; g.dir = PacMaze.LEFT; g.mode = ACTIVE }
+                1 -> { g.px = 248f; g.py = 100f; g.dir = PacMaze.DOWN; g.mode = IN_HOUSE }
+                2 -> { g.px = 232f; g.py = 100f; g.dir = PacMaze.UP; g.mode = IN_HOUSE }
+                else -> { g.px = 264f; g.py = 100f; g.dir = PacMaze.UP; g.mode = IN_HOUSE }
             }
             g.bob = if (g.id == 1) 0.5f else -0.5f
         }
@@ -307,7 +313,10 @@ class PacmanGame {
             }
             DYING -> dying()
             CLEARING -> clearing()
-            CLEARED -> if (!complete) newGame()
+            CLEARED -> if (boardNumber < 10 && level >= boardNumber * 10) {
+                boardNumber++
+                newGame(resetScore = false)
+            }
             GAME_OVER -> if (--sceneTicks <= 0) newGame()
         }
     }
@@ -317,7 +326,7 @@ class PacmanGame {
         noDotTicks++
         checkRelease()
         if (fruitTicks > 0) fruitTicks--
-        if (complete && eaten < PacMaze.totalPellets && ++completeTicks > ASSIST_TICKS && !assist) sendGhostsHome()
+        if (quota == PacMaze.totalPellets && eaten < quota && ++completeTicks > ASSIST_TICKS && !assist) sendGhostsHome()
         movePac()
         if (scene != PLAYING) return
         for (g in ghosts) moveGhost(g)
@@ -337,9 +346,10 @@ class PacmanGame {
     private fun eatAt(tx: Int, ty: Int) {
         val i = PacMaze.idx(tx, ty)
         val kind = pellets[i]
-        if (kind == 0 || eaten >= quota) return
+        if (kind == 0 || eaten >= quota || PacMaze.region(i) != activeRegion) return
         pellets[i] = 0
         eaten++
+        while (regionIndex < 10 && pellets.indices.none { pellets[it] != 0 && PacMaze.region(it) == regionIndex }) regionIndex++
         addScore(if (kind == 2) 50 else 10)
         pauseTicks = if (kind == 2) 3 else 1
         if (kind == 2) startFrightened()
@@ -402,8 +412,8 @@ class PacmanGame {
             g.mode = IN_HOUSE
             g.frightened = false
             g.reverse = false
-            g.px = if (g.id == 2) 96f else if (g.id == 3) 128f else 112f
-            g.py = 116f
+            g.px = if (g.id == 2) 232f else if (g.id == 3) 264f else 248f
+            g.py = 100f
         }
     }
 
@@ -424,7 +434,12 @@ class PacmanGame {
         if (pauseTicks > 0) { pauseTicks--; return }
         if (pac.stopped) pacArrive()
         if (pac.stopped) return
-        val base = BASE_SPEED * (if (frightTicks > 0) 0.90f else 0.80f)
+        val base = BASE_SPEED * when {
+            boardNumber >= 5 -> 1f
+            frightTicks > 0 -> if (boardNumber == 1) 0.90f else 0.95f
+            boardNumber >= 2 -> 0.90f
+            else -> 0.80f
+        }
         pacAnim++
         travel(pac, base) { pacArrive() }
     }
@@ -512,9 +527,9 @@ class PacmanGame {
         var count = pacBfs(me, false)
         var d = -1
         if (frightTicks > 90) d = findFirst(count) { t -> ghosts.any { it.mode == ACTIVE && it.frightened && tileIndex(it) == t } }
-        if (d < 0 && allowEat && danger > 0 && ghostDist[me] <= 8) d = findFirst(count) { t -> pellets[t] == 2 }
-        if (d < 0 && fruitTicks > 0) d = findFirst(count) { t -> t == PacMaze.idx(13, 17) || t == PacMaze.idx(14, 17) }
-        if (d < 0 && allowEat) d = findFirst(count) { t -> pellets[t] != 0 }
+        if (d < 0 && allowEat && danger > 0 && ghostDist[me] <= 8) d = findFirst(count) { t -> pellets[t] == 2 && PacMaze.region(t) == activeRegion }
+        if (d < 0 && fruitTicks > 0) d = findFirst(count) { t -> t == PacMaze.idx(30, 17) || t == PacMaze.idx(31, 17) }
+        if (d < 0 && allowEat) d = findFirst(count) { t -> pellets[t] != 0 && PacMaze.region(t) == activeRegion }
         if (d >= 0) return d
 
         // Nothing to eat yet: keep to lanes that are already clear, so no pellet is passed over uneaten.
@@ -600,29 +615,29 @@ class PacmanGame {
         when (g.mode) {
             IN_HOUSE -> {
                 g.py += g.bob
-                if (g.py <= 112f) g.bob = 0.5f else if (g.py >= 120f) g.bob = -0.5f
+                if (g.py <= 96f) g.bob = 0.5f else if (g.py >= 104f) g.bob = -0.5f
                 g.dir = if (g.bob < 0) PacMaze.UP else PacMaze.DOWN
             }
             LEAVING -> leaveHouse(g)
             ENTERING -> {
                 g.py += EYES_SPEED
-                if (g.py >= 116f) { g.py = 116f; g.mode = LEAVING; g.frightened = false }
+                if (g.py >= 100f) { g.py = 100f; g.mode = LEAVING; g.frightened = false }
             }
             else -> travel(g, ghostSpeed(g)) { ghostArrive(g) }
         }
     }
 
     private fun leaveHouse(g: Ghost) {
-        if (abs(g.px - 112f) > 0.5f) {
-            g.px += if (g.px < 112f) HOUSE_SPEED else -HOUSE_SPEED
-            g.dir = if (g.px < 112f) PacMaze.RIGHT else PacMaze.LEFT
+        if (abs(g.px - 248f) > 0.5f) {
+            g.px += if (g.px < 248f) HOUSE_SPEED else -HOUSE_SPEED
+            g.dir = if (g.px < 248f) PacMaze.RIGHT else PacMaze.LEFT
             return
         }
-        g.px = 112f
+        g.px = 248f
         g.dir = PacMaze.UP
         g.py -= HOUSE_SPEED
-        if (g.py > 92f) return
-        g.py = 92f
+        if (g.py > 76f) return
+        g.py = 76f
         g.mode = ACTIVE
         g.dir = PacMaze.LEFT
         g.stopped = false
@@ -632,13 +647,13 @@ class PacmanGame {
 
     private fun ghostSpeed(g: Ghost): Float {
         if (g.mode == EYES) return EYES_SPEED
-        val tunnel = tileY(g.py) == PacMaze.TUNNEL_ROW && (tileX(g.px) <= 5 || tileX(g.px) >= 22)
+        val tunnel = tileY(g.py) == PacMaze.TUNNEL_ROW && (tileX(g.px) <= 5 || tileX(g.px) >= PacMaze.COLS - 6)
         return BASE_SPEED * when {
             g.frightened -> if (tunnel) 0.40f else 0.50f
             tunnel -> 0.40f
             g.id == 0 && elroyLevel() == 2 -> 0.85f
             g.id == 0 && elroyLevel() == 1 -> 0.80f
-            else -> 0.75f
+            else -> if (boardNumber >= 5) 0.95f else if (boardNumber >= 2) 0.85f else 0.75f
         }
     }
 
@@ -652,9 +667,9 @@ class PacmanGame {
     private fun ghostArrive(g: Ghost) {
         val tx = tileX(g.px)
         val ty = tileY(g.py)
-        if (g.mode == EYES && ty == 11 && (tx == 13 || tx == 14)) {
+        if (g.mode == EYES && ty == 9 && (tx == 30 || tx == 31)) {
             g.mode = ENTERING
-            g.px = 112f
+            g.px = 248f
             g.dir = PacMaze.DOWN
             return
         }
@@ -688,7 +703,7 @@ class PacmanGame {
         }
         var tgtX = 0
         var tgtY = 0
-        if (g.mode == EYES) { tgtX = 13; tgtY = 11 } else targetOf(g, tx, ty).let { tgtX = (it shr 32).toInt(); tgtY = it.toInt() }
+        if (g.mode == EYES) { tgtX = 30; tgtY = 9 } else targetOf(g, tx, ty).let { tgtX = (it shr 32).toInt(); tgtY = it.toInt() }
         var best = opposite
         var bestDist = Int.MAX_VALUE
         for (d in 0..3) {
@@ -793,7 +808,7 @@ class PacmanGame {
         const val CLEARED = 5
         const val GAME_OVER = 6
 
-        const val FRIGHT_TICKS = 360       // 6 s on board 1
+        const val FRIGHT_TICKS = 15 * 60   // Longer chase window for the landscape charging maze.
         const val FRIGHT_FLASHES = 5
         const val FLASH_TICKS = 14
 
@@ -819,14 +834,14 @@ class PacmanGame {
         private const val FRUIT_SECOND = 170
         private const val FRUIT_TICKS = 570
         private const val FRUIT_POINTS = 100    // cherries
-        const val FRUIT_X = 112f
+        const val FRUIT_X = 248f
         const val FRUIT_Y = 140f
 
         /** Scatter, chase, scatter, chase, scatter, chase, scatter, chase (level 1), in ticks; -1 never ends. */
         private val WAVES = intArrayOf(7 * 60, 20 * 60, 7 * 60, 20 * 60, 5 * 60, 20 * 60, 5 * 60, -1)
         private val PERSONAL_LIMIT = intArrayOf(0, 0, 30, 60)
-        private val SCATTER_X = intArrayOf(25, 2, 27, 0)
-        private val SCATTER_Y = intArrayOf(-3, -3, 31, 31)
-        private val NO_UP = listOf(12 to 11, 15 to 11, 12 to 23, 15 to 23)
+        private val SCATTER_X = intArrayOf(59, 2, 61, 0)
+        private val SCATTER_Y = intArrayOf(-3, -3, 25, 25)
+        private val NO_UP = listOf(30 to 9, 31 to 9, 30 to 21, 31 to 21)
     }
 }

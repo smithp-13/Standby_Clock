@@ -4,46 +4,88 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PacmanGameTest {
-    @Test fun openingAtDifferentBatteryLevelsStartsWithAllPelletsAvailable() {
+    @Test fun energizersGiveFifteenSecondsAndRefreshTheChaseOnEveryBoard() {
+        val energize = PacmanGame::class.java.getDeclaredMethod("startFrightened").apply { isAccessible = true }
+        val timer = PacmanGame::class.java.getDeclaredField("frightTicks").apply { isAccessible = true }
+        for (percent in 0..90 step 10) {
+            val game = PacmanGame()
+            game.setCharge(percent, false)
+            energize.invoke(game)
+            assertEquals(15 * 60, game.frightTicks)
+            assertTrue(game.ghosts.all { it.frightened })
+            timer.setInt(game, 90)
+            energize.invoke(game)
+            assertEquals(15 * 60, game.frightTicks)
+        }
+    }
+
+    @Test fun eachPercentUnlocksOnlyItsOwnRegionInOrder() {
+        val game = PacmanGame()
+        game.setCharge(1, false)
+        val eat = PacmanGame::class.java.getDeclaredMethod("eatAt", Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType).apply { isAccessible = true }
+        val later = game.pellets.indices.first { game.pellets[it] != 0 && PacMaze.region(it) == 1 }
+        val original = game.pellets[later]
+        eat.invoke(game, later % PacMaze.COLS, later / PacMaze.COLS)
+        assertEquals(original, game.pellets[later])
+        for (i in game.pellets.indices) if (PacMaze.region(i) == 0 && game.pellets[i] != 0)
+            eat.invoke(game, i % PacMaze.COLS, i / PacMaze.COLS)
+        assertEquals(-1, game.activeRegion)
+        eat.invoke(game, later % PacMaze.COLS, later / PacMaze.COLS)
+        assertEquals(original, game.pellets[later])
+        game.setCharge(2, false)
+        assertEquals(1, game.activeRegion)
+        eat.invoke(game, later % PacMaze.COLS, later / PacMaze.COLS)
+        assertEquals(0, game.pellets[later])
+    }
+
+    @Test fun openingAtDifferentBatteryLevelsSelectsTheChargingBand() {
         for (percent in intArrayOf(0, 25, 50, 75, 99, 100)) {
             val game = PacmanGame()
             game.setCharge(percent, false)
             assertEquals("battery $percent", 0, game.eaten)
-            assertEquals(244, game.quota)
-            assertEquals(244, game.pellets.count { it != 0 })
+            assertEquals((percent / 10 + 1).coerceAtMost(10), game.boardNumber)
+            assertEquals(PacMaze.totalPellets, game.pellets.count { it != 0 })
         }
     }
 
     @Test fun originalMazeHasAllConsumablesReachable() {
-        assertEquals(240, PacMaze.pellets0.count { it == 1 })
+        assertTrue(PacMaze.COLS > PacMaze.ROWS * 2)
+        assertTrue(PacMaze.totalPellets > 244)
         assertEquals(4, PacMaze.pellets0.count { it == 2 })
         for (i in PacMaze.pellets0.indices) if (PacMaze.pellets0[i] != 0) assertTrue(PacMaze.walkable[i])
-        assertEquals(PacMaze.idx(27, 14), PacMaze.neighbor(0, 14, PacMaze.LEFT))
-        assertEquals(PacMaze.idx(0, 14), PacMaze.neighbor(27, 14, PacMaze.RIGHT))
+        assertEquals(PacMaze.idx(PacMaze.COLS - 1, PacMaze.TUNNEL_ROW), PacMaze.neighbor(0, PacMaze.TUNNEL_ROW, PacMaze.LEFT))
+        assertEquals(PacMaze.idx(0, PacMaze.TUNNEL_ROW), PacMaze.neighbor(PacMaze.COLS - 1, PacMaze.TUNNEL_ROW, PacMaze.RIGHT))
     }
 
-    @Test fun pelletsRemainActiveRegardlessOfBatteryLevel() {
+    @Test fun pelletProgressCannotCompleteBeforeTheTenPercentMilestone() {
         val game = PacmanGame()
-        game.setCharge(50, false)
+        game.setCharge(9, false)
         assertEquals(0, game.eaten)
-        repeat(3_000) { game.tick() }
+        repeat(15_000) { game.tick() }
         assertTrue(game.eaten > 0)
-        assertEquals(244, game.quota)
-        assertEquals(244 - game.eaten, game.pellets.count { it != 0 })
+        assertTrue(game.eaten <= game.quota)
+        assertFalse(game.cleared)
+        assertEquals(PacMaze.totalPellets - game.eaten, game.pellets.count { it != 0 })
+        game.setCharge(10, false)
+        repeat(150_000) { if (game.boardNumber == 1) game.tick() }
+        assertEquals(2, game.boardNumber)
+        assertEquals(0, game.quota)
     }
 
     @Test fun chargeCompletionClearsAndResumingChargeStartsAFreshBoard() {
         val game = PacmanGame()
         game.setCharge(99, false)
         game.setCharge(100, true)
-        repeat(60_000) { if (game.scene != PacmanGame.CLEARED) game.tick() }
+        repeat(150_000) { if (game.scene != PacmanGame.CLEARED) game.tick() }
         assertEquals(PacmanGame.CLEARED, game.scene)
-        assertEquals(244, game.eaten)
+        assertEquals(PacMaze.totalPellets, game.eaten)
         assertTrue(game.pellets.all { it == 0 })
         game.setCharge(50, false)
         assertEquals(PacmanGame.READY, game.scene)
         assertEquals(0, game.eaten)
-        assertEquals(244, game.pellets.count { it != 0 })
+        assertEquals(PacMaze.totalPellets, game.pellets.count { it != 0 })
+        assertEquals(6, game.boardNumber)
     }
 
     @Test fun newGameDoesNotInheritHouseCountersFromPreviousRun() {

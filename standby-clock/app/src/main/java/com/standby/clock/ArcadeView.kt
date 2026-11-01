@@ -6,9 +6,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.BitmapFactory
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.CornerPathEffect
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
 import android.graphics.Rect
@@ -33,13 +36,16 @@ class ArcadeView(context: Context) : View(context) {
 
     private val dp = resources.displayMetrics.density
     private val game = PacmanGame()
-    private val maze = BitmapFactory.decodeResource(resources, R.drawable.pacman_maze)
+    private val maze by lazy { buildMaze() }
     private val sprites = BitmapFactory.decodeResource(resources, R.drawable.pacman_sprites)
     private val pixels = Paint().apply { isFilterBitmap = false; isAntiAlias = false }
     private val fill = Paint()
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = resources.getFont(R.font.press_start_2p)
         color = Color.WHITE
+    }
+    private val hud = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = resources.getFont(R.font.press_start_2p)
     }
     private val source = Rect()
     private val target = RectF()
@@ -107,39 +113,112 @@ class ArcadeView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         if (theme == Theme.PACMAN) drawGame(canvas)
-        drawInfo(canvas)
+        else drawInfo(canvas)
+    }
+
+    /** Draw corridor boundaries from the same square-tile topology used by movement. */
+    private fun buildMaze(): Bitmap {
+        val bitmap = Bitmap.createBitmap(PacMaze.COLS * 8, PacMaze.ROWS * 8, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bitmap)
+        val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(33, 33, 255)
+            style = Paint.Style.STROKE
+            strokeWidth = 1f
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+            pathEffect = CornerPathEffect(3f)
+        }
+        val edges = linkedMapOf<Int, MutableList<Int>>()
+        val incoming = mutableSetOf<Int>()
+        fun edge(x1: Int, y1: Int, x2: Int, y2: Int) {
+            val from = y1 * (PacMaze.COLS + 1) + x1
+            val to = y2 * (PacMaze.COLS + 1) + x2
+            edges.getOrPut(from) { mutableListOf() }.add(to)
+            incoming.add(to)
+        }
+        for (y in 0 until PacMaze.ROWS) for (x in 0 until PacMaze.COLS) {
+            if (!PacMaze.walkable[PacMaze.idx(x, y)]) continue
+            for (d in 0..3) {
+                val nx = x + PacMaze.DX[d]; val ny = y + PacMaze.DY[d]
+                if (nx !in 0 until PacMaze.COLS || ny !in 0 until PacMaze.ROWS) continue
+                if (PacMaze.walkable[PacMaze.idx(nx, ny)]) continue
+                when (d) {
+                    PacMaze.UP -> edge(x, y, x + 1, y)
+                    PacMaze.LEFT -> edge(x, y + 1, x, y)
+                    PacMaze.DOWN -> edge(x + 1, y + 1, x, y + 1)
+                    else -> edge(x + 1, y, x + 1, y + 1)
+                }
+            }
+        }
+        // Join tile edges before rounding so the walls stay continuous at every corner.
+        val walls = Path()
+        while (edges.isNotEmpty()) {
+            val start = edges.keys.firstOrNull { it !in incoming } ?: edges.keys.first()
+            var point = start
+            walls.moveTo(point % (PacMaze.COLS + 1) * 8f, point / (PacMaze.COLS + 1) * 8f)
+            do {
+                val from = point
+                val nextEdges = edges[point] ?: break
+                point = nextEdges.removeAt(0)
+                if (nextEdges.isEmpty()) edges.remove(from)
+                walls.lineTo(point % (PacMaze.COLS + 1) * 8f, point / (PacMaze.COLS + 1) * 8f)
+            } while (point != start)
+            if (point == start) walls.close()
+        }
+        c.save()
+        c.translate(0.5f, 0.5f)
+        c.drawPath(walls, line)
+        c.restore()
+        line.color = Color.rgb(255, 184, 255)
+        c.drawLine(240f, 80f, 256f, 80f, line)
+        return bitmap
     }
 
     private fun drawGame(canvas: Canvas) {
-        val availableWidth = width - 24 * dp
-        val availableHeight = height - 24 * dp
+        val availableWidth = width - 16 * dp
+        val header = 48 * dp
+        val availableHeight = height - header - 8 * dp
         if (availableWidth <= 0 || availableHeight <= 0) return
-        val sx = availableWidth / 224f
-        val sy = availableHeight / 288f
-        val oldFit = minOf((width * 0.46f - 24 * dp).coerceAtLeast(1f) / 224f, sy)
-        val spriteScale = if (oldFit >= 1f) floor(oldFit) else oldFit
-        spriteWidthScale = spriteScale / sx
-        spriteHeightScale = spriteScale / sy
+        val scale = minOf(availableWidth / (PacMaze.COLS * 8), availableHeight / (PacMaze.ROWS * 8))
+        val previousSize = floor((height - 24 * dp) / 288f).coerceAtLeast(1f)
+        spriteWidthScale = minOf(1f, previousSize / scale)
+        spriteHeightScale = spriteWidthScale
+        val boardLeft = (width - PacMaze.COLS * 8 * scale) / 2
+        val infoLeft = boardLeft + 8 * scale
+        val scoreLabel = "LEVEL ${game.boardNumber}/10  SCORE ${game.score}"
+        hud.textSize = 7 * dp
+        hud.textAlign = Paint.Align.LEFT
+        hud.color = Color.WHITE
+        canvas.drawText(scoreLabel, infoLeft, 18 * dp, hud)
+        hud.color = Color.YELLOW
+        canvas.drawText("$level% CHARGED", infoLeft, 33 * dp, hud)
+        val regionLabel = if (game.activeRegion >= 0)
+            "REGION ${(game.boardNumber - 1) * 10 + game.activeRegion + 1}%"
+            else if (game.boardNumber == 10 && game.cleared) "CHARGE COMPLETE" else "WAITING FOR CHARGE"
+        val centerLabel = "$regionLabel  ·  GOAL ${game.boardNumber * 10}%"
+        hud.textAlign = Paint.Align.CENTER
+        val powered = game.frightTicks > 0
+        val powerLabel = if (powered) "POWER-UP ${(game.frightTicks + 59) / 60}S" else "POWER-UP --"
+        hud.color = Color.CYAN
+        canvas.drawText(powerLabel, width / 2f, 18 * dp, hud)
+        hud.color = Color.WHITE
+        hud.textSize = 5.5f * dp
+        canvas.drawText(centerLabel, width / 2f, 33 * dp, hud)
         canvas.save()
-        canvas.translate(12 * dp, 12 * dp)
-        canvas.scale(sx, sy)
-        text.textAlign = Paint.Align.LEFT
+        canvas.translate(boardLeft,
+            header + (availableHeight - PacMaze.ROWS * 8 * scale) / 2)
+        canvas.scale(scale, scale)
         text.textSize = 7f
-        text.color = Color.WHITE
-        canvas.drawText("1UP", 8f, 8f, text)
-        canvas.drawText("HIGH SCORE", 112f, 8f, text)
-        canvas.drawText(game.score.toString().padStart(2, '0'), 8f, 18f, text)
-        canvas.drawText(game.highScore.toString().padStart(2, '0'), 112f, 18f, text)
-
         canvas.save()
-        canvas.translate(0f, 24f)
-        canvas.clipRect(0f, 0f, 224f, 248f)
+        canvas.clipRect(0f, 0f, PacMaze.COLS * 8f, PacMaze.ROWS * 8f)
         pixels.colorFilter = if (game.flashWhite) whiteMaze else null
         canvas.drawBitmap(maze, 0f, 0f, pixels)
         pixels.colorFilter = null
         fill.color = Color.rgb(255, 184, 174)
         for (i in game.pellets.indices) {
             val kind = game.pellets[i]
+            fill.color = if (PacMaze.region(i) == game.activeRegion) Color.rgb(255, 235, 160)
+                else Color.rgb(105, 111, 140)
             val x = (i % PacMaze.COLS) * 8f + 4f
             val y = (i / PacMaze.COLS) * 8f + 4f
             if (kind == 1) canvas.drawRect(x - 1.25f, y - 1.25f, x + 1.25f, y + 1.25f, fill)
@@ -150,7 +229,9 @@ class ArcadeView(context: Context) : View(context) {
             if (game.deathFrame >= 0) {
                 val opening = (game.deathFrame + 1) * (360f / 11f)
                 fill.color = Color.YELLOW
-                target.set(game.pac.px - 6.5f, game.pac.py - 6.5f, game.pac.px + 6.5f, game.pac.py + 6.5f)
+                // Match the atlas body's 13x13 bounds and scale, including its half-pixel offset.
+                target.set(game.pac.px - 7 * spriteWidthScale, game.pac.py - 7 * spriteHeightScale,
+                    game.pac.px + 6 * spriteWidthScale, game.pac.py + 6 * spriteHeightScale)
                 canvas.drawArc(target, 270f + opening / 2, 360f - opening, true, fill)
             } else {
                 val mouth = MOUTH_FRAMES[(game.pacAnim / 4) % 4]
@@ -179,11 +260,9 @@ class ArcadeView(context: Context) : View(context) {
         if (game.ready || game.gameOver) {
             text.color = if (game.gameOver) Color.RED else Color.YELLOW
             text.textAlign = Paint.Align.CENTER
-            canvas.drawText(if (game.gameOver) "GAME OVER" else "READY!", 112f, 141f, text)
+            canvas.drawText(if (game.gameOver) "GAME OVER" else "READY!", 248f, 132f, text)
         }
         canvas.restore()
-        for (i in 0 until (game.lives - 1).coerceIn(0, 5)) drawSprite(canvas, 5, 16f + i * 16f, 280f)
-        drawSprite(canvas, 52, 208f, 280f)
         canvas.restore()
     }
 
@@ -193,8 +272,8 @@ class ArcadeView(context: Context) : View(context) {
             x + 8 * spriteWidthScale, y + 8 * spriteHeightScale)
         canvas.drawBitmap(sprites, source, target, pixels)
         // Only tunnel sprites repeat across the opposite edge.
-        if (y in 104f..128f && (x < 8f || x > 216f)) {
-            target.offset(if (x < 8f) 224f else -224f, 0f)
+        if (y in 96f..104f && (x < 8f || x > PacMaze.COLS * 8 - 8f)) {
+            target.offset(if (x < 8f) PacMaze.COLS * 8f else -PacMaze.COLS * 8f, 0f)
             canvas.drawBitmap(sprites, source, target, pixels)
         }
     }

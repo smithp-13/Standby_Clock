@@ -23,10 +23,8 @@ class StandbyClockView(context: Context) : View(context) {
         fontVariationSettings = "'wght' 1000"
         textAlign = Paint.Align.CENTER
     }
-    // Pac-Man arcade palette: the colon dots are the maze's cream pellets, the two overlapping digit tones are the
-    // muncher's yellow and a paler yellow, so the face matches the arcade frame instead of the wallpaper.
-    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(0xFF, 0xF1, 0xE8) }
-    private val digitColors = intArrayOf(Color.argb(240, 0xFF, 0xD4, 0x00), Color.argb(225, 0xFF, 0xE8, 0x80))
+    private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Theme.materialSecondary(context) }
+    private val digitColors = intArrayOf(Theme.materialAccent(context), Theme.materialSecondary(context))
     private val bounds = Rect()
     private val centers = FloatArray(4)
 
